@@ -1,5 +1,11 @@
-"""Launch the barista cell in Swift.  Run from the repo root:  python -m barista.launch"""
+"""Launch the barista cell in Swift."""
+import sys
+from pathlib import Path
+
 import swift
+
+# Allow running this file directly (e.g. VS Code's Run button), not just via -m.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from barista import layout
 from barista.scene import build_scene

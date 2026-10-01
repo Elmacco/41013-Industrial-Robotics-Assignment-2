@@ -50,3 +50,62 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
 | `pygame`, `keyboard` | Teach pendant / gamepad input |
 
 `numpy` is held at `1.26.4` for Robotics Toolbox compatibility - do not upgrade it to 2.x.
+
+## Team workflow (2 people)
+
+`main` should always run. Nobody commits to it directly: all work goes through a
+short-lived branch and a pull request (PR) that the other person reviews.
+
+### Day-to-day
+
+1. Start from an up-to-date `main`:
+
+   ```powershell
+   git switch main
+   git pull
+   git switch -c <your-name>/<short-task>     # e.g. alec/milk-robot-path
+   ```
+
+2. Work and commit in small steps:
+
+   ```powershell
+   git add <files>
+   git commit -m "Add steam wand approach pose for milk robot"
+   ```
+
+3. Before pushing, bring in your partner's latest work and re-test:
+
+   ```powershell
+   git fetch
+   git rebase origin/main
+   .\.venv\Scripts\python.exe -m barista.scene      # reach check must still pass
+   ```
+
+4. Push and open a PR on GitHub:
+
+   ```powershell
+   git push -u origin <your-name>/<short-task>
+   ```
+
+5. The other person reviews: they pull the branch, run `python -m barista.launch` to
+   look at it in Swift, then approve. Merge with **Squash and merge** and delete the branch.
+
+### Avoiding conflicts
+
+- **Split ownership.** One person drives the espresso robot (UR3), the other the milk
+  robot (UR3e). Do the shared runner (LinearUR3) together or take turns.
+- **`barista/layout.py` is shared.** Every position lives there, so keep layout
+  changes in their own small PR and merge them quickly, separate from motion code.
+- **Say what you're starting** (group chat or a GitHub issue) so two people don't edit
+  the same file at once.
+- Merge at least once a day. Long-lived branches are what cause painful conflicts.
+
+### Don't commit
+
+- `.venv/`. It is gitignored; each person creates their own (see *Environment setup*).
+- New packages without telling your partner. If you add one, update `requirements.txt`
+  in the same PR so the other person can re-run `pip install -r requirements.txt`.
+- AI tools as authors. Do not credit Claude (or any other AI assistant) as an author
+  or co-author anywhere: no `Co-Authored-By: Claude ...` trailers in commit messages,
+  no "Generated with Claude Code" lines in PR descriptions, and no author credits in
+  code or docs. Remove any such lines a tool adds before committing.

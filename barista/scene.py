@@ -1,5 +1,7 @@
 """Builds the barista cell described in layout.py into a Swift environment."""
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import ir_support
 import numpy as np
@@ -7,7 +9,9 @@ import spatialgeometry as geometry
 from ir_support_extra_parts import part_mesh
 from spatialmath import SE3
 
-from barista import layout
+# Allow running this file directly (e.g. VS Code's Run button), not just via -m.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from barista import layout  # noqa: E402
 
 
 def _pose(x, y, z, yaw):
