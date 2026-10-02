@@ -19,6 +19,8 @@ ROBOTS = {
                  role="Pour milk, steam, latte pour, place at pickup"),
     "runner": dict(model="LinearUR3", base=(0.25, 0.45, COUNTER_TOP_Z, 0.0),
                    role="Move cups: supply -> espresso -> milk"),
+    "cs66": dict(model="CS66", base=(1.00, 0.45, COUNTER_TOP_Z, 0.0),
+                 role="Placed only, job not decided yet"),
 }
 
 # ---------------------------------------------------------------- support-package parts
@@ -90,6 +92,9 @@ STATIONS = {
         "cup_supply": (-0.85, 0.30, COUNTER_TOP_Z + 0.08),
         "espresso_handoff": (-0.65, 0.05, COUNTER_TOP_Z + 0.08),
         "milk_handoff": (0.45, 0.05, COUNTER_TOP_Z + 0.08),
+    },
+    "cs66": {
+        "above_tray": (0.95, 0.10, COUNTER_TOP_Z + 0.20),
     },
 }
 
