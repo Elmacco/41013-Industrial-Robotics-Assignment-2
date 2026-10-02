@@ -12,6 +12,10 @@ from spatialmath import SE3
 # Allow running this file directly (e.g. VS Code's Run button), not just via -m.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from barista import layout  # noqa: E402
+from barista.cs66 import CS66  # noqa: E402
+
+# Robots that are not in ir_support, by their layout model name.
+CUSTOM_ROBOTS = {"CS66": CS66}
 
 
 def _pose(x, y, z, yaw):
@@ -26,7 +30,8 @@ class BaristaScene:
 
 
 def make_robot(spec):
-    robot = getattr(ir_support, spec["model"])()
+    model = CUSTOM_ROBOTS.get(spec["model"]) or getattr(ir_support, spec["model"])
+    robot = model()
     # Pre-multiply so models with a built-in base rotation (LinearUR3) keep it.
     robot.base = _pose(*spec["base"]) * robot.base
     return robot
