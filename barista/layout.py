@@ -4,6 +4,8 @@ Barista cell layout: every pose and dimension in the scene, as plain data.
 World frame: origin on the floor under the centre of the counter, +X along the
 counter (cup supply -> espresso -> milk -> pickup), +Y towards the customer,
 +Z up. Units are metres and radians.
+
+Run ``python -m barista.layout`` to print where every object actually ends up.
 """
 from math import pi
 
@@ -99,3 +101,11 @@ STATIONS = {
 }
 
 CAMERA = dict(position=(2.6, 2.4, 2.2), look_at=(0.0, 0.0, COUNTER_TOP_Z))
+
+
+if __name__ == "__main__":
+    import sys
+
+    from barista import build
+
+    build.describe(sys.modules[__name__])
