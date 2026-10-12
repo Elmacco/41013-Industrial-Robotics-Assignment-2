@@ -17,8 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 SCENES = {
     "1": ("barista.scene", "barista.layout"),
     "2": ("barista.scene2", "barista.layout2"),
+    "milk": ("barista.milk_scene", "barista.milk_layout"),
 }
-DEFAULT_SCENE = "2"
+DEFAULT_SCENE = "milk"
 
 
 def load(name):
