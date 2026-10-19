@@ -1,7 +1,11 @@
 """Launch a barista cell scene in Swift.
 
-    python -m barista.launch            # scene 1 (default)
-    python -m barista.launch --scene 2  # scene 2
+    python -m barista.launch                # full cell (default): makes a latte
+    python -m barista.launch --scene milk   # AUBO milk station on its own
+    python -m barista.launch --scene 2      # scene 2
+
+For the full cell with the ordering tablet and e-stops, run
+``python -m barista.full_scene`` instead.
 """
 import argparse
 import importlib
@@ -18,8 +22,9 @@ SCENES = {
     "1": ("barista.scene", "barista.layout"),
     "2": ("barista.scene2", "barista.layout2"),
     "milk": ("barista.milk_scene", "barista.milk_layout"),
+    "full": ("barista.full_scene", "barista.full_layout"),
 }
-DEFAULT_SCENE = "milk"
+DEFAULT_SCENE = "full"
 
 
 def load(name):

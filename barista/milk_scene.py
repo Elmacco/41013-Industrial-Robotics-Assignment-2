@@ -11,19 +11,20 @@ AUBO i5 milk demo. Each cycle:
     python -m barista.milk_scene --check             # plan every style, no Swift
 
 The whole task is planned up front as a list of Segments (joint paths) and only
-then played back. Every segment is collision checked as it is planned (arm,
-gripper and pitcher against the station and against the arm itself, see
-collision.py), and IK picks the clearest arm configuration rather than whatever
-the solver lands on first.
+then played back (planner.py). Every segment is collision checked as it is
+planned (arm, gripper and pitcher against the station and against the arm
+itself, see collision.py), and IK picks the clearest arm configuration rather
+than whatever the solver lands on first.
+
+full_scene.py runs this same task inside the whole cell, with the UR3 bringing
+the cup.
 """
 import argparse
 import sys
-from dataclasses import dataclass, field
-from math import atan2, ceil, cos, hypot, pi, radians, sin
+from math import atan2, cos, hypot, pi, radians, sin
 from pathlib import Path
 
 import numpy as np
-import roboticstoolbox as rtb
 from spatialmath import SE3
 
 # Allow running this file directly (e.g. VS Code's Run button), not just via -m.
@@ -31,11 +32,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from barista import build  # noqa: E402
 from barista import milk_layout as layout  # noqa: E402
 from barista.collision import CollisionChecker, box_from_spec  # noqa: E402
+from barista.cup import Cup  # noqa: E402
+from barista.planner import DT, Planner, PlanningError  # noqa: E402
 from barista.steam_profiles import DEFAULT_PROFILE, PROFILES, WandPlacement  # noqa: E402
 
-DT = 0.05
 HIDDEN = SE3(0.0, 0.0, -5.0)          # parking spot for effects that are off
-MAX_JOINT_STEP = radians(2)           # finest joint step a path is checked at
 
 # Pitcher frame expressed in the flange frame while it is held: the flange's +Z
 # points at the pitcher axis, the pitcher's +Z (up) is the flange's -X.
@@ -130,191 +131,46 @@ def flange(pitcher_pose):
 
 
 # ---------------------------------------------------------------- planning
-class PlanningError(RuntimeError):
-    pass
+def carry(pl, name, *waypoints):
+    """Carry the pitcher upright through (angle_deg, r, z) waypoints, sweeping
+    round the base on arcs rather than cutting across it in straight lines."""
+    poses = []
+    a0, r0, z0 = arc_coords(pl.fk_held(pl.q))
+    for a1, r1, z1 in waypoints:
+        length = hypot(radians(a1 - a0) * (r0 + r1) / 2, r1 - r0, z1 - z0)
+        n = max(pl._steps(length / CARRY_SPEED), 10)
+        for u in np.linspace(0.0, 1.0, n + 1)[1:]:
+            s = _ease(u)
+            poses.append(flange(on_arc(a0 + s * (a1 - a0), r0 + s * (r1 - r0), z0 + s * (z1 - z0))))
+        a0, r0, z0 = a1, r1, z1
+    return pl.follow(name, poses)
 
 
-@dataclass
-class Segment:
-    name: str
-    qs: np.ndarray                         # (N, n) joint path; row 0 is where it starts
-    holding: bool = False                  # pitcher travels with the gripper
-    cup_level: np.ndarray = None           # per row milk height in the cup
-    effects: dict = field(default_factory=dict)   # effect name -> per row on/off
-
-    @property
-    def duration(self):
-        return (len(self.qs) - 1) * DT
-
-
-class Planner:
-    """Turns targets into collision-checked joint paths, one Segment at a time.
-
-    * ``ik`` solves from the current joints first and, when asked, from a spread
-      of other seeds too, and keeps the clearest collision-free answer.
-    * ``free_move`` (empty-handed, only the end pose matters) tries the direct
-      joint path to each IK answer, then via random clear configurations (the
-      Lab 5 primitive RRT) if every direct path is blocked.
-    * ``follow`` / ``line_move`` are constrained Cartesian moves; they keep the
-      arm's configuration and are rejected if any step collides.
-    """
-
-    def __init__(self, robot, q0, checker=None, pitcher_T=None, dt=DT, seed=1):
-        self.robot = robot
-        self.q = np.array(q0, dtype=float)
-        self.dt = dt
-        self.checker = checker
-        self.pitcher_T = pitcher_T          # where the pitcher is when not held
-        self.holding = False
-        self.segments = []
-        self.rng = np.random.default_rng(seed)
-
-    # ---- helpers
-    def _steps(self, duration):
-        return max(int(round(duration / self.dt)), 1)
-
-    def _fk_pitcher(self, q):
-        return self.robot.fkine(q) * GRASP
-
-    def clearance(self, q):
-        if self.checker is None:
-            return np.inf, ""
-        P = self._fk_pitcher(q) if self.holding else self.pitcher_T
-        return self.checker.worst(q, self.holding, P)
-
-    def collision(self, qs):
-        if self.checker is None:
-            return None
-        return self.checker.first_collision(qs, self.holding, self.pitcher_T, self._fk_pitcher)
-
-    def _solve(self, T, seed):
-        # A URDF robot's ikine solves in its base frame (fkine does include the
-        # base), so hand it the target relative to the base.
-        sol = self.robot.ikine_LM(self.robot.base.inv() * T, q0=seed, joint_limits=True)
-        if not sol.success or np.linalg.norm(self.robot.fkine(sol.q).t - T.t) > 1e-3:
-            return None
-        # Every joint turns +-2 pi, so the solver may return the same pose a
-        # full turn away; take the turn nearest the seed (if within limits).
-        q = np.array(sol.q)
-        near = q - 2 * pi * np.round((q - seed) / (2 * pi))
-        lo, hi = self.robot.qlim
-        return np.where((near >= lo) & (near <= hi), near, q)
-
-    def ik(self, T, seed, label, search=0):
-        """IK for flange pose T. With search > 0, also try that many random
-        seeds and return the clear solutions, clearest first."""
-        found = []
-        for s in [seed] + [self.rng.uniform(-pi, pi, self.robot.n) for _ in range(search)]:
-            q = self._solve(T, s)
-            if q is not None and all(np.max(np.abs(q - f)) > 1e-2 for f in found):
-                found.append(q)
-        if not found:
-            raise PlanningError(f"{label}: no IK solution")
-        if not search:
-            return found[0]
-        scored = sorted(((self.clearance(q)[0], i) for i, q in enumerate(found)), reverse=True)
-        clear = [found[i] for c, i in scored if c >= 0.0]
-        if not clear:
-            c, i = scored[0]
-            raise PlanningError(f"{label}: every IK solution collides "
-                                f"(best {c * 1000:.0f} mm, {self.clearance(found[i])[1]})")
-        return clear
-
-    def _add(self, name, qs, **fx):
-        qs = np.asarray(qs)
-        hit = self.collision(qs)
-        if hit is not None:
-            k, what, c = hit
-            raise PlanningError(f"{name}: collision at step {k}/{len(qs) - 1}: "
-                                f"{what} ({c * 1000:.0f} mm)")
-        seg = Segment(name, qs, holding=self.holding, **fx)
-        self.segments.append(seg)
-        self.q = seg.qs[-1]
-        return seg
-
-    def _joint_path(self, q0, q1, duration=0.0):
-        n = max(self._steps(duration), int(ceil(np.max(np.abs(q1 - q0)) / MAX_JOINT_STEP)))
-        return rtb.jtraj(q0, q1, n + 1).q
-
-    # ---- gripper
-    def grip(self, closed):
-        if not closed:
-            self.pitcher_T = self._fk_pitcher(self.q)
-        self.holding = closed
-
-    # ---- moves
-    def free_move(self, name, target, duration, search=40, tries=200):
-        """Joint-space move to a flange pose (SE3) or a joint vector."""
-        goals = self.ik(target, self.q, name, search) if isinstance(target, SE3) else [np.asarray(target, float)]
-        for q1 in goals:
-            path = self._joint_path(self.q, q1, duration)
-            if self.collision(path) is None:
-                return self._add(name, path)
-        # Primitive RRT (Lab 5, 3.3): random clear configuration as a via point.
-        q1 = goals[0]
-        for _ in range(tries):
-            via = self.q + self.rng.uniform(-pi / 2, pi / 2, self.robot.n)
-            if self.clearance(via)[0] < 0.0:
-                continue
-            a, b = self._joint_path(self.q, via, duration / 2), self._joint_path(via, q1, duration / 2)
-            if self.collision(a) is None and self.collision(b) is None:
-                return self._add(name, np.vstack([a, b[1:]]))
-        raise PlanningError(f"{name}: no collision-free joint path found")
-
-    def follow(self, name, flange_poses, max_jump=0.2, **fx):
-        """Track sampled flange poses, each IK seeded by the one before.
-
-        A big jump between samples means the solver flipped configuration (or
-        the path passes near a singularity), so it is refused instead of
-        letting the arm whip round.
-        """
-        qs = [self.q]
-        for i, T in enumerate(flange_poses):
-            q = self.ik(T, qs[-1], f"{name}, sample {i}")
-            jump = np.max(np.abs(q - qs[-1]))
-            if jump > max_jump:
-                raise PlanningError(f"{name}, sample {i}: joint jump of {jump:.2f} rad")
-            qs.append(q)
-        return self._add(name, qs, **fx)
-
-    def line_move(self, name, T_flange, duration, **fx):
-        """Straight-line Cartesian move of the flange (orientation slerped)."""
-        T0 = self.robot.fkine(self.q)
-        return self.follow(name, list(rtb.ctraj(T0, T_flange, self._steps(duration)))[1:], **fx)
-
-    def carry(self, name, *waypoints):
-        """Carry the pitcher upright through (angle_deg, r, z) waypoints, sweeping
-        round the base on arcs rather than cutting across it in straight lines."""
-        poses = []
-        a0, r0, z0 = arc_coords(self._fk_pitcher(self.q))
-        for a1, r1, z1 in waypoints:
-            length = hypot(radians(a1 - a0) * (r0 + r1) / 2, r1 - r0, z1 - z0)
-            n = max(self._steps(length / CARRY_SPEED), 10)
-            for u in np.linspace(0.0, 1.0, n + 1)[1:]:
-                s = _ease(u)
-                poses.append(flange(on_arc(a0 + s * (a1 - a0), r0 + s * (r1 - r0), z0 + s * (z1 - z0))))
-            a0, r0, z0 = a1, r1, z1
-        return self.follow(name, poses)
-
-    def wait(self, name, duration, **fx):
-        return self._add(name, np.repeat(self.q[None], self._steps(duration) + 1, axis=0), **fx)
-
-
-def make_checker(robot):
-    obstacles = [box_from_spec(n, s) for n, s in layout.PLACEHOLDERS.items()]
-    return CollisionChecker(robot, obstacles, PITCHER_CAPSULE, pitcher_skip={"steam_wand"})
+def make_checker(robot, obstacles=None, others=()):
+    """Checker for the AUBO. obstacles defaults to the milk station plus the cup."""
+    if obstacles is None:
+        obstacles = [box_from_spec(n, s) for n, s in layout.PLACEHOLDERS.items()]
+        obstacles.append(box_from_spec("cup", layout.CUP_SPEC))
+    return CollisionChecker(robot, obstacles, PITCHER_CAPSULE, held_name="pitcher",
+                            held_skip={"steam_wand"}, others=others)
 
 
 def pitcher_home():
     return on_arc(*layout.PITCHER_HOME)
 
 
-def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None):
-    """Plan one full cycle for a steam profile; returns the Segments."""
+def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None, checker=None, name="milk"):
+    """Plan one full cycle for a steam profile; returns the Segments.
+
+    checker defaults to make_checker(robot); pass one to check against a bigger
+    scene. check=False plans with no collision checks at all.
+    """
     steam = PROFILES[profile]
     q0 = HOME_Q if q0 is None else q0
     home = pitcher_home()
-    pl = Planner(robot, q0, make_checker(robot) if check else None, pitcher_T=home)
+    if check and checker is None:
+        checker = make_checker(robot)
+    pl = Planner(robot, q0, checker if check else None, grasp=GRASP, held_T=home, name=name)
 
     a_disp, r, z_bay = layout.PITCHER_HOME
     a_steam, a_wash = layout.ANGLE["steamer"], layout.ANGLE["wash"]
@@ -327,10 +183,10 @@ def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None):
     pl.line_move("reach handle", flange(home), 1.0)
     pl.grip(True)
     pl.line_move("lift pitcher", flange(lifted), 1.0)
-    pl.carry("draw out of bay", (a_disp, r - PULL_OUT, z_bay + 0.06))
+    carry(pl, "draw out of bay", (a_disp, r - PULL_OUT, z_bay + 0.06))
 
     # Steam: over the basin and cup, drop down beside the steamer, slide under the wand
-    pl.carry("carry to steamer", (a_disp, r - PULL_OUT, CARRY_Z), (a_steam + 25, r, CARRY_Z),
+    carry(pl, "carry to steamer", (a_disp, r - PULL_OUT, CARRY_Z), (a_steam + 25, r, CARRY_Z),
              (a_steam + 25, r, z_below_wand), (a_steam, r, z_below_wand))
     pl.line_move("dip wand in", flange(at_wand(steam.placement(0.0))), 1.5)
     n = pl._steps(steam.duration)
@@ -338,7 +194,7 @@ def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None):
     pl.line_move("lower off wand", flange(below_wand), 1.5)
 
     # Pour
-    pl.carry("carry to cup", arc_coords(pour_pose(0.0)))
+    carry(pl, "carry to cup", arc_coords(pour_pose(0.0)))
     n = pl._steps(POUR_DURATION)
     us = np.linspace(0.0, 1.0, n + 1)
     tilts = np.array([pour_state(u)[0] for u in us])
@@ -349,7 +205,7 @@ def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None):
 
     # Rinse upside down over the spray
     over_basin = on_arc(a_wash, r, WASH_HIGH)
-    pl.carry("carry to wash", (a_wash, r, WASH_HIGH))
+    carry(pl, "carry to wash", (a_wash, r, WASH_HIGH))
     n = pl._steps(1.5)
     pl.follow("turn over", [flange(rolled(over_basin, pi * _ease(i / n))) for i in range(1, n + 1)])
     pl.line_move("lower over spray", flange(rolled(on_arc(a_wash, r, WASH_LOW), pi)), 1.0)
@@ -358,8 +214,8 @@ def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None):
     pl.follow("turn upright", [flange(rolled(over_basin, pi * (1 - _ease(i / n)))) for i in range(1, n + 1)])
 
     # Back into the dispenser, which refills it
-    pl.carry("carry to dispenser", (a_disp, r - PULL_OUT, CARRY_Z), (a_disp, r - PULL_OUT, z_bay + 0.06))
-    pl.carry("slide into bay", (a_disp, r, z_bay + 0.06))
+    carry(pl, "carry to dispenser", (a_disp, r - PULL_OUT, CARRY_Z), (a_disp, r - PULL_OUT, z_bay + 0.06))
+    carry(pl, "slide into bay", (a_disp, r, z_bay + 0.06))
     pl.line_move("set down", flange(home), 1.0)
     pl.grip(False)
     pl.line_move("release", flange(home) * BACK_OFF, 1.0)
@@ -379,12 +235,8 @@ def _place(obj, spec, parent):
     obj.T = (parent * build.pose(x, y, z + spec["size"][-1] / 2, yaw)).A
 
 
-MILK_WHITE, COFFEE, WATER = (0.97, 0.95, 0.90, 1), (0.40, 0.24, 0.12, 1), (0.55, 0.75, 0.95, 0.6)
+MILK_WHITE, WATER = (0.97, 0.95, 0.90, 1), (0.55, 0.75, 0.95, 0.6)
 EFFECTS = {
-    # The coffee and milk are full-height cylinders rising out of the table
-    # (which hides the part below the cup), so their top face is the level.
-    "espresso": dict(shape="cylinder", size=(layout.CUP_R - 0.003, layout.CUP_H), color=COFFEE),
-    "cup_milk": dict(shape="cylinder", size=(layout.CUP_R - 0.006, layout.CUP_H), color=MILK_WHITE),
     "milk_stream": dict(shape="cylinder", size=(0.005, 0.15), color=MILK_WHITE),
     "dispenser_stream": dict(shape="cylinder", size=(0.004, 0.09), color=MILK_WHITE),
     "rinse_spray": dict(shape="cylinder", size=(0.006, 0.05), color=WATER),
@@ -393,31 +245,34 @@ EFFECTS = {
 
 def build_scene(env=None):
     scene = build.build_scene(layout, env)
-    scene.robots["milk"].q = HOME_Q
+    add_station_parts(scene, env)
+    scene.cup = Cup(layout.CUP_R, layout.CUP_H, SE3(*layout.CUP_AT, layout.TABLE_TOP_Z))
+    reset_cup(scene)
+    if env is not None:
+        scene.cup.add_to_env(env)
+    return scene
 
+
+def add_station_parts(scene, env=None):
+    """Add the AUBO's moving parts (pitcher, gripper, streams) to a built scene."""
+    scene.robots["milk"].q = HOME_Q
     scene.pitcher = {n: build.make_placeholder(s) for n, s in layout.PITCHER_PARTS.items()}
     scene.gripper = {n: build.make_placeholder(s) for n, s in layout.GRIPPER_PARTS.items()}
     scene.effects = {n: build.make_placeholder(dict(s, pose=(0, 0, 0, 0))) for n, s in EFFECTS.items()}
     scene.pitcher_pose = pitcher_home()
-
-    _set_level(scene, "espresso", layout.ESPRESSO_H)
-    _set_level(scene, "cup_milk", 0.0)
-    _set_effects(scene, {})
-    _update_attached(scene, holding=False)
-
+    set_effects(scene, {})
+    update_attached(scene, holding=False)
     if env is not None:
         for obj in (*scene.pitcher.values(), *scene.gripper.values(), *scene.effects.values()):
             env.add(obj)
-    return scene
 
 
-def _set_level(scene, name, level):
-    """Raise a full-height liquid cylinder so its top sits `level` above the cup floor."""
-    cx, cy = layout.CUP_AT
-    scene.effects[name].T = SE3(cx, cy, layout.TABLE_TOP_Z + level - layout.CUP_H / 2).A
+def reset_cup(scene):
+    """A fresh cup with just the espresso in it."""
+    scene.cup.set(espresso=layout.ESPRESSO_H, level=layout.ESPRESSO_H)
 
 
-def _update_attached(scene, holding):
+def update_attached(scene, holding):
     T_flange = scene.robots["milk"].fkine(scene.robots["milk"].q)
     for name, spec in layout.GRIPPER_PARTS.items():
         _place(scene.gripper[name], spec, T_flange)
@@ -427,7 +282,7 @@ def _update_attached(scene, holding):
         _place(scene.pitcher[name], spec, scene.pitcher_pose)
 
 
-def _set_effects(scene, on):
+def set_effects(scene, on):
     """Show the streams named in `on`, hide the rest."""
     fx = scene.effects
     for name in ("milk_stream", "dispenser_stream", "rinse_spray"):
@@ -450,10 +305,10 @@ def play(scene, env, segments, dt=DT, verbose=True):
             print(f"    {seg.name:22s} {seg.duration:4.1f} s")
         for k, q in enumerate(seg.qs):
             robot.q = q
-            _update_attached(scene, seg.holding)
+            update_attached(scene, seg.holding)
             if seg.cup_level is not None:
-                _set_level(scene, "cup_milk", seg.cup_level[k])
-            _set_effects(scene, {name: bool(np.atleast_1d(v)[min(k, np.size(v) - 1)])
+                scene.cup.set(level=seg.cup_level[k])
+            set_effects(scene, {name: bool(np.atleast_1d(v)[min(k, np.size(v) - 1)])
                                  for name, v in seg.effects.items()})
             env.step(dt)
 
@@ -464,7 +319,7 @@ def animate(scene, env, cycles=1, profile=DEFAULT_PROFILE):
     print(f"  steam profile '{profile}': {PROFILES[profile].description}")
     print(f"  {len(segments)} segments, {sum(s.duration for s in segments):.1f} s per cycle")
     for _ in range(max(int(cycles), 0)):
-        _set_level(scene, "cup_milk", 0.0)        # a fresh cup each cycle
+        reset_cup(scene)                          # a fresh cup each cycle
         play(scene, env, segments)
 
 

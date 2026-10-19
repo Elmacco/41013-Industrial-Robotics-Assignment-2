@@ -21,6 +21,7 @@ from pathlib import Path
 
 import ir_support
 import numpy as np
+import roboticstoolbox as rtb
 import spatialgeometry as geometry
 from ir_support_extra_parts import part_mesh, part_path
 from spatialmath import SE3
@@ -156,8 +157,10 @@ def check_reach(scene, layout):
     results = {}
     for robot_name, stations in layout.STATIONS.items():
         robot = scene.robots[robot_name]
+        # A URDF robot's ikine solves in its base frame; a DH robot's in the world.
+        to_ik = (lambda T: T) if isinstance(robot, rtb.DHRobot) else (lambda T: robot.base.inv() * T)
         for station, xyz in stations.items():
-            sol = robot.ikine_LM(SE3(*xyz), q0=robot.q, mask=[1, 1, 1, 0, 0, 0],
+            sol = robot.ikine_LM(to_ik(SE3(*xyz)), q0=robot.q, mask=[1, 1, 1, 0, 0, 0],
                                  joint_limits=True, slimit=200)
             err = np.linalg.norm(robot.fkine(sol.q).t - np.array(xyz)) if sol.success else np.inf
             results[(robot_name, station)] = bool(sol.success and err < 1e-3)

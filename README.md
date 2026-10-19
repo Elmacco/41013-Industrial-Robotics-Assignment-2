@@ -51,6 +51,84 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
 
 `numpy` is held at `1.26.4` for Robotics Toolbox compatibility - do not upgrade it to 2.x.
 
+## Scenes
+
+| Command | What it shows |
+| --- | --- |
+| `python -m barista.full_scene` | **The full cell.** Opens Swift and an order window: order a drink, the robots make it, it comes out through the collection drawer |
+| `python -m barista.full_scene --no-window` | The same, ordering from the Swift tablet buttons instead |
+| `python -m barista.full_scene --check` | Plans every drink without Swift and reports any collision |
+| `python -m barista.milk_scene` | The AUBO i5 milk station on its own (see [AUBO-i5/README.md](AUBO-i5/README.md)) |
+| `python -m barista.launch --scene <1, 2, milk, full>` | Any scene through the shared launcher |
+
+### The full cell (`barista/full_scene.py`, `barista/full_layout.py`)
+
+- **Enclosure:** 2 m clear walls on the floor round the table (no roof, so the
+  camera has a clear view). Yellow and
+  black safety tape on the floor just outside. The only opening is the slot the
+  collection drawer slides through, and a shroud stops anyone reaching through it.
+- **Ordering:** a desktop window opens next to Swift (`barista/kiosk_window.py`,
+  tkinter, so nothing extra to install). It has:
+  - a button per drink (latte, cappuccino, flat white, swirl latte, espresso)
+    with its usual time;
+  - a live queue: each order's number, status (queued, planning, being made,
+    ready at the drawer, collected) and a countdown to when it can be collected;
+  - what each robot is doing, the beacon colour, and an e-stop with reset.
+
+  Countdowns marked `~` are estimates for orders not yet started; once a batch
+  is planned they come from its schedule (and stop while the e-stop is on).
+  Closing the window quits. The Swift page keeps its own tablet buttons too,
+  standing in for the kiosk outside the glass.
+- **Planning ahead:** on start-up every drink is planned in the background
+  (about two minutes the first time; you can order meanwhile). Plans are saved
+  in your temp folder, named after a hash of the `barista/` code, so later runs
+  load them instantly and only re-plan after the code changes. A new mix of
+  drinks ordered together then takes about 2 s to schedule. `--check` never
+  uses the saved plans.
+- **E-stops:** one inside the cell (on the table corner) and one outside (by the
+  kiosk). Either button freezes every robot where it is until *Reset e-stop* is
+  pressed. The beacon on its mast shows green (ready), amber (making) or red
+  (e-stop).
+- **One order:**
+  1. The cup dispenser (a clear tube holding a stack of cups) drops a cup, and
+     the UR3 puts it under the espresso machine's group head.
+  2. The CS66 makes the shot:
+     - takes the portafilter off its dock;
+     - fills it at the grinder;
+     - presses it in the tamping machine;
+     - locks it into the group head with a twist, and the shot pours into the cup;
+     - knocks the spent puck into the knock box;
+     - rinses the portafilter at its wash station and puts it back on the dock.
+  3. The UR3 carries the cup to the hand-off spot.
+  4. The AUBO i5 fills, steams and pours the milk.
+  5. The UR3 takes the drink to the drawer.
+  6. The drawer slides out to the customer.
+
+  An espresso skips steps 3 and 4.
+- **Robots work at the same time.** Each robot only waits where it really has to:
+  - the CS66 grinds and tamps while the UR3 fetches the cup, and only waits for
+    the cup before locking into the group head;
+  - the AUBO steams the milk from the start and only waits for the cup to pour;
+  - the CS66 cleans up, and the AUBO rinses and refills, while the drink moves on;
+  - orders queued together are made together: the UR3 fetches the next cup
+    before taking the last drink to the drawer.
+
+  A latte takes about 81 s (164 s one robot at a time), an espresso about 63 s,
+  and a latte, espresso and cappuccino together about 206 s (421 s). Orders
+  placed while a batch is being made go into the next batch.
+- **Collision checking:** each robot's moves are checked against the cell as
+  they are planned. Then `barista/schedule.py` runs the robots together and
+  checks every pair of robots against each other at every frame. If two would
+  come within 10 mm, the lower-priority robot pauses until the way is clear; if
+  they would block each other for good, planning fails and names them.
+  `--check` schedules every drink and a three-drink batch, and reports the
+  time, any pauses, and how close the robots came.
+- **Espresso station layout:** every CS66 station sits 0.5 m from its base,
+  set by angle in `CS66_ANGLE` in `full_layout.py`, with the portafilter
+  handle always pointing back at the CS66. The CS66 never swings the
+  portafilter through the UR3's side (`CS66_KEEP_CLEAR` in `full_scene.py`),
+  which also stops its base joint winding past its limit.
+
 ## Team workflow (2 people)
 
 `main` should always run. Nobody commits to it directly: all work goes through a

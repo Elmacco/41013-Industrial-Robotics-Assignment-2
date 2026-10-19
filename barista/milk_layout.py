@@ -109,8 +109,12 @@ GRIPPER_PARTS = {
 }
 
 # ---------------------------------------------------------------- cup
+# The cup moves between scenes' robots, so it is not a static placeholder: it is
+# a barista.cup.Cup standing at CUP_AT while the milk is poured. CUP_SPEC is its
+# stand-in for collision checks while it stands there.
 CUP_R, CUP_H = 0.04, 0.10
 ESPRESSO_H = 0.02          # coffee already in the cup when the pour starts
+CUP_SPEC = dict(shape="cylinder", size=(CUP_R, CUP_H), pose=(*CUP_AT, TABLE_TOP_Z, 0.0))
 
 # ---------------------------------------------------------------- placeholders
 # box: (sx, sy, sz); cylinder: (radius, height). Pose z is the bottom face.
@@ -129,10 +133,6 @@ PLACEHOLDERS = {
     "wand_arm": _facing(_s, STATION_R - 0.01 + _arm / 2, WAND_TIP[2] + WAND_LEN,
                         (_arm, 0.025, 0.025), color=STEEL),
     "steam_wand": dict(shape="cylinder", size=(0.006, WAND_LEN), pose=(*WAND_TIP, 0.0), color=STEEL),
-
-    # Translucent glass so the milk level can be seen rising inside it.
-    "cup": dict(shape="cylinder", size=(CUP_R, CUP_H), pose=(*CUP_AT, TABLE_TOP_Z, 0.0),
-                color=(0.85, 0.90, 0.95, 0.35)),
 
     # Wash station
     "wash_basin": _facing(_w, STATION_R, TABLE_TOP_Z, (0.22, 0.22, BASIN_TOP_Z - TABLE_TOP_Z),

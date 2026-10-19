@@ -10,6 +10,11 @@ The AUBO i5 runs the milk side of the barista cell. Each cycle it:
 
 All the station equipment is placeholder boxes and cylinders until real meshes are made.
 
+This page covers the milk station on its own (`barista.milk_scene`). The full cell
+(`barista.full_scene`) runs the same task, with the UR3 bringing the cup to the
+hand-off spot and taking the finished drink to the collection drawer; see
+*Scenes* in the main [README](../README.md).
+
 ## Running it
 
 From the repo root, with the `.venv` set up (see the main [README](../README.md)):
@@ -37,7 +42,9 @@ the step and parts where a plan fails.
 | `barista/aubo_i5.py` | `AuboI5` robot class, registered in `build.py` as layout model `"AuboI5"` |
 | `barista/milk_layout.py` | Every position and size in the milk station, as plain data |
 | `barista/steam_profiles.py` | The steam styles |
-| `barista/milk_scene.py` | Task sequence, motion planner, Swift playback |
+| `barista/milk_scene.py` | Task sequence and Swift playback |
+| `barista/planner.py` | Motion planner shared by every robot |
+| `barista/cup.py` | The glass cup and the coffee and milk inside it |
 | `barista/collision.py` | Collision checker used by the planner |
 
 ## The layout
@@ -124,11 +131,13 @@ current joints plus about 40 random starting points, discards every solution
 that collides, and goes to the one with the most clearance. The Cartesian
 moves that follow inherit that configuration.
 
-Two quirks of the URDF robot are handled inside `Planner._solve`:
+Two quirks of the IK are handled inside `Planner._solve` (`planner.py`):
 
-- **Base frame.** `ikine_LM` solves relative to the robot's base, but `fkine`
-  includes the base, so targets are converted with `robot.base.inv() * T`.
-  Every answer is then checked against the target with `fkine`.
+- **Base frame.** For this URDF robot, `ikine_LM` solves relative to the
+  robot's base, but `fkine` includes the base, so targets are converted with
+  `robot.base.inv() * T`. (DH robots like the UR3 take world targets, and the
+  planner handles both.) Every answer is then checked against the target with
+  `fkine`.
 - **Full turns.** Every joint can turn plus or minus 2 pi, so the solver may
   return the same pose a full turn away. Each answer is shifted to the turn
   nearest the starting joints.
