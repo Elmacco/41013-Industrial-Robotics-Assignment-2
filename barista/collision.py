@@ -17,7 +17,7 @@ Bodies checked: the arm links, the gripper, and the object it carries (with
 the arm while held, as an obstacle when it is standing somewhere). Other robots
 can be added as capsules frozen where they wait.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from spatialmath import SE3
@@ -91,16 +91,21 @@ def _dh_frames(names):
 class ArmModel:
     """How an arm is drawn as capsules.
 
-    links: (name, start frame, end frame, radius). The one named "base" is the
-        fixed column, never tested against the table it is bolted to.
+    links: (name, start frame, end frame, radius), running between two frame
+        origins given by `frames`. The one named "base" is the fixed column,
+        never tested against the table it is bolted to.
+    local: (name, link, p0, p1, radius), fixed in a DH link's own frame
+        (link 0 = base), for arms whose bodies sit off the joint axes. Several
+        may share a name (one link drawn as a few capsules).
     self_pairs: capsule names to test against each other. "held" is whatever
         the gripper is carrying.
     """
-    frames: object           # (robot, q) -> {frame name: xyz}
-    links: list
     gripper_len: float       # gripper capsule axis length (its ends add the radius)
     gripper_radius: float
     self_pairs: list
+    frames: object = None    # (robot, q) -> {frame name: xyz}
+    links: list = field(default_factory=list)
+    local: list = field(default_factory=list)
 
 
 AUBO_I5 = ArmModel(
@@ -163,6 +168,35 @@ CS66 = ArmModel(
 )
 
 
+# Doosan M0609 (standard DH, see doosan_m0609.py). Its bodies sit well off the
+# joint axes (the upper arm runs 18-21 cm out along the shoulder axis), so each
+# link gets capsules fixed in its own DH frame, fitted to Doosan's link meshes:
+# split each link's vertices into equal lengths along their main axis, then
+# take the radius enclosing 99.5 % of them. Every vertex ends up inside a
+# capsule or within 3.2 mm of one (Doosan-M0609/README.md).
+M0609 = ArmModel(
+    local=[
+        ("base", 0, (0.002, 0.006, 0.023), (-0.015, -0.257, 0.015), 0.133),
+        ("shoulder", 1, (0.0, 0.02, 0.003), (0.0, 0.0, -0.002), 0.110),
+        ("upper_arm", 2, (-0.418, 0.0, 0.18), (-0.404, 0.0, 0.18), 0.112),
+        ("upper_arm", 2, (-0.28, -0.003, 0.212), (-0.267, -0.003, 0.212), 0.105),
+        ("upper_arm", 2, (-0.144, -0.003, 0.209), (-0.13, -0.003, 0.209), 0.107),
+        ("upper_arm", 2, (-0.007, 0.0, 0.18), (0.007, 0.0, 0.18), 0.112),
+        ("elbow", 3, (0.0, 0.002, -0.014), (0.0, 0.0, 0.005), 0.103),
+        ("forearm", 4, (0.0, -0.26, 0.004), (0.0, -0.163, 0.061), 0.058),
+        ("forearm", 4, (0.0, -0.051, 0.134), (0.0, -0.024, 0.15), 0.100),
+        ("wrist", 5, (0.0, -0.002, -0.033), (0.0, -0.002, -0.016), 0.104),
+        ("flange", 6, (0.0, -0.004, -0.019), (0.0, 0.005, -0.019), 0.058),
+    ],
+    gripper_len=0.05,         # + the radius = fingertips at 0.095
+    gripper_radius=0.045,
+    self_pairs=[(a, b) for a in ("base", "shoulder")
+                for b in ("forearm", "wrist", "flange", "gripper", "held")]
+               + [("upper_arm", b) for b in ("wrist", "flange", "gripper", "held")]
+               + [("forearm", "held")],
+)
+
+
 # ---------------------------------------------------------------- the checker
 def held_segments(held):
     """Normalise a held-object shape to a list of (p0, p1, radius) in its frame.
@@ -206,9 +240,16 @@ class CollisionChecker:
         self._held_lo, self._held_hi = pts.min(0) - r, pts.max(0) + r
 
     def capsules(self, q, holding=False, held_T=None):
-        frames = self.model.frames(self.robot, q)
-        caps = [Capsule(name, sample(frames[a], frames[b]), rad)
-                for name, a, b, rad in self.model.links]
+        caps = []
+        if self.model.links:
+            frames = self.model.frames(self.robot, q)
+            caps += [Capsule(name, sample(frames[a], frames[b]), rad)
+                     for name, a, b, rad in self.model.links]
+        if self.model.local:
+            link_T = [T.A for T in self.robot.fkine_all(q)]
+            for name, link, p0, p1, rad in self.model.local:
+                T = link_T[link]
+                caps.append(Capsule(name, sample(T[:3, :3] @ p0 + T[:3, 3], T[:3, :3] @ p1 + T[:3, 3]), rad))
         flange = self.robot.fkine(q)
         tip = (flange * SE3.Tz(self.model.gripper_len)).t
         caps.append(Capsule("gripper", sample(flange.t, tip), self.model.gripper_radius))

@@ -58,7 +58,7 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
 | `python -m barista.full_scene` | **The full cell.** Opens Swift and an order window: order a drink, the robots make it, it comes out through the collection drawer |
 | `python -m barista.full_scene --no-window` | The same, ordering from the Swift tablet buttons instead |
 | `python -m barista.full_scene --check` | Plans every drink without Swift and reports any collision |
-| `python -m barista.milk_scene` | The AUBO i5 milk station on its own (see [AUBO-i5/README.md](AUBO-i5/README.md)) |
+| `python -m barista.milk_scene` | The Doosan M0609 milk station on its own (model: [Doosan-M0609/README.md](Doosan-M0609/README.md); station: [AUBO-i5/README.md](AUBO-i5/README.md)) |
 | `python -m barista.launch --scene <1, 2, milk, full>` | Any scene through the shared launcher |
 
 ### The full cell (`barista/full_scene.py`, `barista/full_layout.py`)
@@ -100,7 +100,7 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
      - knocks the spent puck into the knock box;
      - rinses the portafilter at its wash station and puts it back on the dock.
   3. The UR3 carries the cup to the hand-off spot.
-  4. The AUBO i5 fills, steams and pours the milk.
+  4. The Doosan M0609 fills, steams and pours the milk.
   5. The UR3 takes the drink to the drawer.
   6. The drawer slides out to the customer.
 
@@ -108,8 +108,8 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
 - **Robots work at the same time.** Each robot only waits where it really has to:
   - the CS66 grinds and tamps while the UR3 fetches the cup, and only waits for
     the cup before locking into the group head;
-  - the AUBO steams the milk from the start and only waits for the cup to pour;
-  - the CS66 cleans up, and the AUBO rinses and refills, while the drink moves on;
+  - the M0609 steams the milk from the start and only waits for the cup to pour;
+  - the CS66 cleans up, and the M0609 rinses and refills, while the drink moves on;
   - orders queued together are made together: the UR3 fetches the next cup
     before taking the last drink to the drawer.
 

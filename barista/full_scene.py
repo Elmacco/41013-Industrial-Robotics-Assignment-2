@@ -14,7 +14,7 @@ One order:
        shot pulls into the cup; then knocks the puck out, rinses the
        portafilter and puts it back on its dock
     3. UR3 carries the cup to the hand-off spot          (skipped: espresso)
-    4. AUBO i5 fills, steams and pours the milk           (skipped: espresso)
+    4. Doosan M0609 fills, steams and pours the milk           (skipped: espresso)
     5. UR3 carries the drink to the collection drawer
     6. the drawer slides out through the glass, the customer takes the cup,
        and the drawer comes back
@@ -365,7 +365,7 @@ def _waiting(scene):
     barista = CollisionChecker(scene.robots["espresso"], [], layout.PF_CAPSULES, held_name="portafilter",
                                model=CS66_MODEL)
     return dict(
-        milk=frozen(aubo, milk_scene.HOME_Q, "AUBO"),
+        milk=frozen(aubo, milk_scene.HOME_Q, "M0609"),
         runner=frozen(ur3, UR3_HOME_Q, "UR3"),
         espresso=frozen(barista, CS66_HOME_Q, "CS66"),
         pitcher=aubo.resting_box(milk_scene.pitcher_home()),
@@ -379,11 +379,11 @@ def make_checkers(scene):
                                                     pose=(*SPOTS[spot].t, 0.0)))
     base = static_obstacles()
     return dict(
-        # UR3: the AUBO and CS66 wait at home, pitcher and portafilter on their docks.
+        # UR3: the M0609 and CS66 wait at home, pitcher and portafilter on their docks.
         runner=CollisionChecker(scene.robots["runner"], base + [w["pitcher"], w["portafilter"]],
                                 CUP_CAPSULE, held_name="cup", others=w["milk"] + w["espresso"],
                                 model=UR3_MODEL),
-        # AUBO: the cup waits at the hand-off.
+        # M0609: the cup waits at the hand-off.
         milk=milk_scene.make_checker(scene.robots["milk"], obstacles=base + [cup_at("handoff"), w["portafilter"]],
                                      others=w["runner"] + w["espresso"]),
         # CS66: the cup waits under the group head; the portafilter seats in
@@ -398,9 +398,9 @@ def make_checkers(scene):
 # ---------------------------------------------------------------- planning orders
 GRASPS = {"runner": GRASP_CUP, "milk": milk_scene.GRASP, "espresso": GRASP_PF}
 HOMES = {"runner": UR3_HOME_Q, "milk": milk_scene.HOME_Q, "espresso": CS66_HOME_Q}
-LABELS = {"runner": "UR3", "milk": "AUBO", "espresso": "CS66"}
+LABELS = {"runner": "UR3", "milk": "M0609", "espresso": "CS66"}
 # Who keeps moving when two robots would clash: the CS66 holds the most
-# delicate thing (a locked-in portafilter), the AUBO's steaming can always wait.
+# delicate thing (a locked-in portafilter), the M0609's steaming can always wait.
 PRIORITY = {"espresso": 3, "runner": 2, "milk": 1}
 CUP_POOL = 5                 # cups that can be in flight at once (one per order)
 
@@ -452,7 +452,7 @@ class OrderPlanner:
         CS66        grinds and tamps straight away, waits for "cup at group head",
                     locks in, pulls the shot, unlocks          -> "portafilter out"
                     then knocks, rinses and docks while the others carry on
-        AUBO        steams straight away, waits for "cup at hand-off",
+        M0609       steams straight away, waits for "cup at hand-off",
                     pours                                     -> "pour done"
                     then rinses and refills while the others carry on
         UR3         waits for "portafilter out": cup i -> hand-off (or, for an

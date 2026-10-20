@@ -1,5 +1,11 @@
 # AUBO i5 - milk station
 
+> **Note:** the milk station now runs on the **Doosan M0609** (see
+> [Doosan-M0609/README.md](../Doosan-M0609/README.md)). The AUBO i5 is already in
+> `ir_support_extra_robots`, so it cannot be an individual model. The station, its
+> layout, steam styles and task below are unchanged apart from a raised dispenser
+> bay; read "AUBO" as "the milk robot".
+
 The AUBO i5 runs the milk side of the barista cell. Each cycle it:
 
 1. takes the full milk pitcher out of the milk dispenser,

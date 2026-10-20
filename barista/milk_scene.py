@@ -1,5 +1,5 @@
 """
-AUBO i5 milk demo. Each cycle:
+Doosan M0609 milk demo. Each cycle:
 
     take the full pitcher from the dispenser -> steam it -> pour into the cup
     -> rinse it upside down at the wash station -> put it back in the
@@ -31,7 +31,7 @@ from spatialmath import SE3
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from barista import build  # noqa: E402
 from barista import milk_layout as layout  # noqa: E402
-from barista.collision import CollisionChecker, box_from_spec  # noqa: E402
+from barista.collision import M0609, CollisionChecker, box_from_spec  # noqa: E402
 from barista.cup import Cup  # noqa: E402
 from barista.planner import DT, Planner, PlanningError  # noqa: E402
 from barista.steam_profiles import DEFAULT_PROFILE, PROFILES, WandPlacement  # noqa: E402
@@ -43,7 +43,7 @@ HIDDEN = SE3(0.0, 0.0, -5.0)          # parking spot for effects that are off
 GRASP = SE3(layout.GRIP_HEIGHT, 0.0, layout.GRIP_DEPTH) * SE3.Ry(-pi / 2)
 BACK_OFF = SE3.Tz(-0.08)    # pre-grasp / release: flange pulled back from the handle
 CARRY_Z = layout.TABLE_TOP_Z + 0.18   # pitcher floor height while carried over the cup/basin
-PULL_OUT = 0.12             # how far the pitcher is drawn out of the dispenser bay
+PULL_OUT = 0.07             # how far the pitcher is drawn out of the dispenser bay (clear of the nozzle)
 CARRY_SPEED = 0.25          # m/s along the carry arcs
 
 # Pouring: the pitcher tilts about its spout lip, which starts high over the cup
@@ -147,12 +147,12 @@ def carry(pl, name, *waypoints):
 
 
 def make_checker(robot, obstacles=None, others=()):
-    """Checker for the AUBO. obstacles defaults to the milk station plus the cup."""
+    """Checker for the M0609. obstacles defaults to the milk station plus the cup."""
     if obstacles is None:
         obstacles = [box_from_spec(n, s) for n, s in layout.PLACEHOLDERS.items()]
         obstacles.append(box_from_spec("cup", layout.CUP_SPEC))
     return CollisionChecker(robot, obstacles, PITCHER_CAPSULE, held_name="pitcher",
-                            held_skip={"steam_wand"}, others=others)
+                            held_skip={"steam_wand"}, others=others, model=M0609)
 
 
 def pitcher_home():
@@ -170,7 +170,10 @@ def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None, checker=None,
     home = pitcher_home()
     if check and checker is None:
         checker = make_checker(robot)
-    pl = Planner(robot, q0, checker if check else None, grasp=GRASP, held_T=home, name=name)
+    # RMRC for the Cartesian moves: the pour passes close to the M0609's wrist
+    # singularity, where damped least squares keeps the motion smooth.
+    pl = Planner(robot, q0, checker if check else None, grasp=GRASP, held_T=home, name=name,
+                 tracker="rmrc")
 
     a_disp, r, z_bay = layout.PITCHER_HOME
     a_steam, a_wash = layout.ANGLE["steamer"], layout.ANGLE["wash"]
@@ -225,7 +228,7 @@ def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None, checker=None,
 
 
 # Elbow up, gripper level and pointing out over the cup. Clear of everything.
-HOME_Q = np.array([0.0, 0.0, 1.6, 0.0, 1.57, 0.0])
+HOME_Q = np.array([0.0, 0.0, 1.9, 0.0, 1.2, 0.0])
 
 
 # ---------------------------------------------------------------- scene
@@ -254,7 +257,7 @@ def build_scene(env=None):
 
 
 def add_station_parts(scene, env=None):
-    """Add the AUBO's moving parts (pitcher, gripper, streams) to a built scene."""
+    """Add the M0609's moving parts (pitcher, gripper, streams) to a built scene."""
     scene.robots["milk"].q = HOME_Q
     scene.pitcher = {n: build.make_placeholder(s) for n, s in layout.PITCHER_PARTS.items()}
     scene.gripper = {n: build.make_placeholder(s) for n, s in layout.GRIPPER_PARTS.items()}

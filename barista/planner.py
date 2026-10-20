@@ -51,7 +51,7 @@ class Planner:
     """
 
     def __init__(self, robot, q0, checker=None, grasp=SE3(), held_T=None, name="",
-                 dt=DT, seed=1):
+                 dt=DT, seed=1, tracker="ik"):
         self.robot = robot
         self.q = np.array(q0, dtype=float)
         self.dt = dt
@@ -62,6 +62,8 @@ class Planner:
         self.holding = False
         self.segments = []
         self.rng = np.random.default_rng(seed)
+        self.tracker = tracker              # "ik" or "rmrc", for Cartesian moves
+        self.manipulability = []            # (segment name, per-row values) from RMRC moves
         # A DH robot's ikine takes world targets; a URDF robot's solves in its
         # base frame (though its fkine does include the base).
         self._world_ik = isinstance(robot, rtb.DHRobot)
@@ -164,22 +166,85 @@ class Planner:
         raise PlanningError(f"{name}: no collision-free joint path found")
 
     def follow(self, name, flange_poses, max_jump=0.2, **fx):
-        """Track sampled flange poses, each IK seeded by the one before.
+        """Track sampled flange poses: by IK seeded from the last sample, or by
+        RMRC (see rmrc_step) when the planner was made with tracker="rmrc".
 
         A big jump between samples means the solver flipped configuration (or
         the path passes near a singularity), so it is refused instead of
         letting the arm whip round.
         """
-        qs = [self.q]
+        qs, manip = [self.q], [self.robot.manipulability(self.q)]
         for i, T in enumerate(flange_poses):
-            # Few restarts: a tracking step that fails from the last joints should
-            # not be "rescued" by a random configuration somewhere else.
-            q = self.ik(T, qs[-1], f"{name}, sample {i}", restarts=3)
+            label = f"{name}, sample {i}"
+            if self.tracker == "rmrc":
+                q = self.rmrc_step(qs[-1], T, label)
+            else:
+                # Few restarts: a tracking step that fails from the last joints
+                # should not be "rescued" by a random configuration elsewhere.
+                q = self.ik(T, qs[-1], label, restarts=3)
             jump = np.max(np.abs(q - qs[-1]))
             if jump > max_jump:
-                raise PlanningError(f"{name}, sample {i}: joint jump of {jump:.2f} rad")
+                raise PlanningError(f"{label}: joint jump of {jump:.2f} rad")
             qs.append(q)
+            manip.append(self.robot.manipulability(q))
+        if self.tracker == "rmrc":
+            self.manipulability.append((name, np.array(manip)))
         return self._add(name, qs, **fx)
+
+    # ---- resolved motion rate control
+    RMRC_W0 = 0.02            # manipulability below which damping starts
+    RMRC_LAMBDA = 0.05        # damping at zero manipulability
+    RMRC_ITER = 4             # corrective iterations per sample
+    RMRC_W = np.diag([1.0, 1.0, 1.0, 0.3, 0.3, 0.3])   # position matters more than a slight tilt
+    RMRC_POS_TOL = 0.006      # m: worst position error accepted (only reached for a few samples
+    #                           right at the M0609 wrist singularity in the pour; elsewhere < 0.5 mm)
+    RMRC_ROT_TOL = 0.03       # rad: worst orientation error accepted
+
+    def rmrc_step(self, q, T, label):
+        """One sample of resolved motion rate control (Labs 6 and 9).
+
+        The flange velocity needed to reach the next pose in one step,
+        xdot = [position error; orientation error] / dt, is turned into joint
+        velocities and integrated over the step. The joint velocities solve a
+        weighted, damped least-squares problem (Lab 9):
+
+            qdot = (J^T W J + lambda^2 I)^-1 J^T W xdot
+
+        W weights position above orientation, and lambda grows as the
+        manipulability falls below RMRC_W0 (zero damping when well away). Near a
+        singularity (for the M0609's wrist: joint 5 near zero, joints 4 and 6
+        lined up) plain IK can flip joints 4 and 6 by half a turn between
+        samples; damping keeps the joint rates bounded and the motion smooth,
+        at the cost of a small, checked tracking error there.
+
+        A few corrective iterations per sample (feeding the remaining error
+        back) keep the path from drifting.
+        """
+        robot, dt = self.robot, self.dt
+        target = T.A
+        for _ in range(self.RMRC_ITER):
+            cur = robot.fkine(q).A
+            e_p = target[:3, 3] - cur[:3, 3]
+            R_err = target[:3, :3] @ cur[:3, :3].T            # rotation still to go, world frame
+            e_r = 0.5 * np.array([R_err[2, 1] - R_err[1, 2], R_err[0, 2] - R_err[2, 0],
+                                  R_err[1, 0] - R_err[0, 1]])
+            xdot = np.concatenate([e_p, e_r]) / dt
+            J = robot.jacob0(q)
+            w = np.sqrt(max(np.linalg.det(J @ J.T), 0.0))
+            lam2 = (1.0 - (w / self.RMRC_W0) ** 2) * self.RMRC_LAMBDA ** 2 if w < self.RMRC_W0 else 0.0
+            W = self.RMRC_W
+            qdot = np.linalg.solve(J.T @ W @ J + lam2 * np.eye(6), J.T @ W @ xdot)
+            q = q + qdot * dt
+        lo, hi = robot.qlim
+        if np.any(q < lo) or np.any(q > hi):
+            raise PlanningError(f"{label}: RMRC would pass a joint limit")
+        cur = robot.fkine(q).A
+        pos_err = np.linalg.norm(target[:3, 3] - cur[:3, 3])
+        rot_err = np.arccos(np.clip((np.trace(target[:3, :3] @ cur[:3, :3].T) - 1) / 2, -1, 1))
+        if pos_err > self.RMRC_POS_TOL or rot_err > self.RMRC_ROT_TOL:
+            raise PlanningError(f"{label}: RMRC tracking error {pos_err * 1000:.1f} mm, "
+                                f"{np.degrees(rot_err):.1f} deg")
+        return q
 
     def line_move(self, name, T_flange, duration, **fx):
         """Straight-line Cartesian move of the flange (orientation slerped)."""

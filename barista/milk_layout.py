@@ -1,8 +1,8 @@
 """
-Milk station layout (AUBO i5): fill the pitcher, steam it, pour it into a cup,
+Milk station layout (Doosan M0609): fill the pitcher, steam it, pour it into a cup,
 then rinse the pitcher and put it back to be refilled.
 
-World frame: origin on the floor under the AUBO base, +X straight out from the
+World frame: origin on the floor under the M0609 base, +X straight out from the
 robot, +Y to its left, +Z up. Units are metres and radians.
 
 The stations sit on an arc STATION_R out from the base, so the arm works with
@@ -31,7 +31,7 @@ TABLE_CENTRE = (0.30, 0.05)
 
 # ---------------------------------------------------------------- robots
 ROBOTS = {
-    "milk": dict(model="AuboI5", base=(0.0, 0.0, TABLE_TOP_Z, 0.0),
+    "milk": dict(model="DoosanM0609", base=(0.0, 0.0, TABLE_TOP_Z, 0.0),
                  role="Fill, steam and pour milk; rinse the pitcher"),
 }
 
@@ -65,8 +65,8 @@ STEAMER_FRONT_R = STATION_R + 0.09     # body front face, clear of the pitcher s
 # Milk dispenser: the pitcher stands in a bay under a nozzle and is filled there.
 # This bay is also where the pitcher lives between drinks.
 DISPENSER_FRONT_R = STATION_R + 0.09
-BAY_Z = TABLE_TOP_Z + 0.01             # top of the bay's drip grate
-NOZZLE_Z = TABLE_TOP_Z + 0.21          # bottom of the milk nozzle
+BAY_Z = TABLE_TOP_Z + 0.10             # top of the raised bay (the M0609 wrist needs room below its flange)
+NOZZLE_Z = BAY_Z + 0.20                 # bottom of the milk nozzle
 
 # Wash station: a basin with a spray nozzle pointing up; the pitcher is held
 # upside down over it.

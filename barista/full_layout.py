@@ -1,11 +1,11 @@
 """
 Full barista cell layout: every robot, station and safety feature, as data.
 
-World frame: origin on the floor under the AUBO base (the same frame as
+World frame: origin on the floor under the M0609 base (the same frame as
 milk_layout.py, so the milk station drops in unchanged), +X along the counter
 towards the espresso side, +Y towards the customer, +Z up. Metres and radians.
 
-    -X  milk station (AUBO i5)  |  UR3 runner  |  espresso station (CS66)  +X
+    -X  milk station (M0609)  |  UR3 runner  |  espresso station (CS66)  +X
                        [ collection drawer ]
     ======================= glass, front (+Y) =======================
           outside e-stop      customer      tablet kiosk
@@ -14,7 +14,7 @@ How a drink flows:
     cup dispenser -> UR3 puts a cup under the group head
     -> CS66: portafilter from its dock -> grinder -> tamper -> locks it in the
        group head -> the shot pulls into the cup -> knock box -> rinse -> dock
-    -> UR3 takes the cup to the hand-off spot (AUBO pours the milk)
+    -> UR3 takes the cup to the hand-off spot (the M0609 pours the milk)
     -> UR3 takes it to the collection drawer -> drawer slides out through the
        glass to the customer.
 
@@ -39,7 +39,7 @@ CS66_BASE = (1.80, 0.00)
 ROBOTS = {
     "milk": milk.ROBOTS["milk"],
     "runner": dict(model="UR3", base=(*UR3_BASE, TABLE_TOP_Z, 0.0),
-                   role="Move the cup: dispenser -> espresso -> AUBO -> drawer"),
+                   role="Move the cup: dispenser -> espresso -> M0609 -> drawer"),
     "espresso": dict(model="CS66", base=(*CS66_BASE, TABLE_TOP_Z, pi),
                      role="Grind, tamp, lock the portafilter, pull the shot, clean up"),
 }
@@ -72,7 +72,7 @@ def _facing(centre, angle_deg, r, z, size, color):
 # ---------------------------------------------------------------- cups
 CUP_R, CUP_H = milk.CUP_R, milk.CUP_H
 ESPRESSO_CUP = (1.35, 0.38, TABLE_TOP_Z + 0.01)          # cup floor under the group head
-HANDOFF_CUP = (*milk.CUP_AT, TABLE_TOP_Z)                # where the AUBO pours
+HANDOFF_CUP = (*milk.CUP_AT, TABLE_TOP_Z)                # where the M0609 pours
 
 # Cup dispenser: a clear tube holding a nested stack of cups. The bottom cup
 # drops onto a raised platform (so the UR3 is not reaching low and close in
@@ -346,8 +346,8 @@ CAMERA = dict(position=(4.3, 3.6, 2.7), look_at=(0.95, 0.05, 0.8))
 # Upright signs are collision obstacles too (see full_scene.static_obstacles).
 LABEL_HEIGHT = 0.03
 LABELS = [
-    # Milk station (AUBO)
-    ("AUBO i5", (-0.28, -0.12, _T), True),
+    # Milk station (Doosan M0609)
+    ("DOOSAN M0609", (-0.30, -0.12, _T), True),
     ("STEAMER", (*milk.polar(milk.ANGLE["steamer"], milk.STEAMER_FRONT_R + 0.11), _T + 0.55), False),
     ("MILK DISPENSER", (*milk.polar(milk.ANGLE["dispenser"], milk.DISPENSER_FRONT_R + 0.12), _T + 0.50), False),
     ("PITCHER RINSE", (*milk.polar(milk.ANGLE["wash"], milk.STATION_R + 0.16), _T), False),
