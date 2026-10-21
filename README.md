@@ -129,6 +129,34 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
   portafilter through the UR3's side (`CS66_KEEP_CLEAR` in `full_scene.py`),
   which also stops its base joint winding past its limit.
 
+## Real UR3
+
+The real UR3 runs the same cup moves as the simulated UR3 runner, with the very
+same joint angles (`UR3/`):
+
+| Command | What it does |
+| --- | --- |
+| `python UR3/export_trajectories.py` | Exports the simulated UR3's planned moves to `UR3/ur3_trajectories.json` (re-run after changing the UR3's moves) |
+| `python UR3/jointstatesim.py --drink milk` | Animates those joint angles in Swift, with markers at the cup spots, to rehearse before using the real robot |
+| `python UR3/ur3_real.py --list` | Lists the trips, the drinks and where to put the cups relative to the robot base |
+| `python UR3/ur3_real.py --drink espresso --dry-run` | Shows what would be sent, without a robot |
+| `python UR3/ur3_real.py --trip dispenser_to_espresso --step` | Runs one trip on the real UR3 with the lab's control script, pausing before each segment |
+
+`ur3_real.py` drives the robot through the lab's own control script,
+`UR3/new_ur_control_script.py` (copied unchanged; `roslibpy` is now in
+`requirements.txt`). Each move is one call to its `move_ur_joint_positions`.
+- Each segment is sent as waypoints every 1 s of simulated motion, so the arm
+  stays within about 26 mm of the simulated, collision-checked path.
+  `WAYPOINT_EVERY = 0.5` gets that to 18 mm, at the cost of more stop-start
+  moves.
+- It runs at half the simulated speed by default (`--speed`), and no joint
+  moves faster than 0.5 rad/s.
+- It prompts you to work the gripper at the right moments.
+- A milk drink's three trips take about 2.4 minutes at the default speed.
+
+The real bench is not the simulated cell: clear the space the paths use, keep
+the physical e-stop in reach, start slow, and follow the lab's risk assessment.
+
 ## Team workflow (2 people)
 
 `main` should always run. Nobody commits to it directly: all work goes through a
