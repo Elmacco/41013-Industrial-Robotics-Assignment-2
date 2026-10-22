@@ -14,7 +14,10 @@ Opens Swift with the milk station and a teach window beside it:
 * Go to pose: type a flange pose; the planner solves IK, picks the clearest
   configuration and plans a collision-checked path (Planner.free_move).
 * Live readout of the flange pose, manipulability and the tightest clearance.
-* E-stop: stops all motion until reset.
+* E-stop, on screen or B on a USB game controller (estop.py, gamepad.py):
+  stops all motion at once and cancels the move it was making. Releasing it
+  restarts nothing: Reset (Y), then Resume (A), and the arm then waits where
+  it stopped for a new command.
 
 Like the order window, it runs in the same loop as Swift (one update per
 simulation step), so nothing needs a thread.
@@ -31,6 +34,8 @@ from spatialmath import SE3
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from barista import milk_layout as layout  # noqa: E402
 from barista import milk_scene  # noqa: E402
+from barista.estop import BANNER_COLOURS, EStop  # noqa: E402
+from barista.gamepad import Gamepad  # noqa: E402
 from barista.milk_scene import GRASP, HOME_Q, flange, pitcher_home  # noqa: E402
 from barista.planner import DT, Planner, PlanningError  # noqa: E402
 
@@ -49,7 +54,7 @@ PRESETS = {
 
 
 class TeachWindow:
-    def __init__(self, scene, env):
+    def __init__(self, scene, env, gamepad=True):
         self.scene, self.env = scene, env
         self.robot = scene.robots["milk"]
         self.checker = milk_scene.make_checker(self.robot)
@@ -57,7 +62,7 @@ class TeachWindow:
         self.target_q = self.q.copy()       # where the sliders want the arm
         self.path = []                      # planned rows still to play
         self.jog = None                     # (axis 0-5, sign) while a jog button is held
-        self.estop = False
+        self.estop = EStop()
         self.closed = False
         self._syncing = False
 
@@ -111,6 +116,8 @@ class TeachWindow:
         # ---- readout and e-stop
         info = tk.Frame(root)
         info.grid(row=2, column=0, columnspan=2, sticky="ew", **pad)
+        self.banner = tk.Label(info, font=("Segoe UI", 14, "bold"), fg="white")
+        self.banner.pack(fill="x")
         self.readout = tk.Label(info, font=("Consolas", 10), justify="left", anchor="w")
         self.readout.pack(fill="x")
         self.status = tk.Label(info, font=FONT, anchor="w", fg="#1d4ed8")
@@ -119,7 +126,11 @@ class TeachWindow:
         bar.grid(row=3, column=0, columnspan=2, sticky="ew", **pad)
         tk.Button(bar, text="E-STOP", font=("Segoe UI", 14, "bold"), bg="#dc2626", fg="white",
                   width=10, command=self._press_estop).pack(side="left")
-        tk.Button(bar, text="Reset e-stop", command=self._reset_estop).pack(side="left", padx=10)
+        for text, command in (("Release e-stop", self._release_estop), ("Reset", self._reset_estop),
+                              ("Resume", self._resume)):
+            tk.Button(bar, text=text, width=12, command=command).pack(side="left", padx=(10, 0))
+        self.gamepad = (Gamepad(self.estop, on_reset=self._reset_estop, on_resume=self._resume)
+                        if gamepad else None)
 
         self._apply(self.q)
         self._copy_pose()
@@ -159,7 +170,7 @@ class TeachWindow:
         # (within half the slider's 0.5 deg resolution of where the arm is).
         if self._syncing or abs(deg - np.degrees(self.q[j])) < 0.3:
             return
-        if self.estop:
+        if not self.estop.running:
             self._apply(self.q)                 # snap back
             return
         self.path, self.jog = [], None
@@ -168,7 +179,7 @@ class TeachWindow:
         self.say(f"J{j + 1} to {deg:.1f} deg")
 
     def _start_jog(self, axis, sign):
-        if not self.estop:
+        if self.estop.running:
             self.path = []
             self.target_q = self.q.copy()
             self.jog = (axis, sign)
@@ -195,7 +206,7 @@ class TeachWindow:
         self._goto(SE3(x / 1000, y / 1000, z / 1000) * SE3.RPY(r, p, yw, order="xyz", unit="deg"), "typed pose")
 
     def _goto(self, target, name):
-        if self.estop:
+        if not self.estop.running:
             return
         self.say(f"Planning to {name} ...")
         self.root.update()
@@ -210,20 +221,34 @@ class TeachWindow:
         self.say(f"Going to {name}: {len(seg.qs)} steps, IK + collision-checked path.")
 
     def _press_estop(self):
-        self.estop = True
-        self.path, self.jog = [], None
-        self.target_q = self.q.copy()
-        self.say("E-STOP: all motion stopped. Reset to carry on.", "#b91c1c")
+        self.estop.press("teach window e-stop")
+
+    def _release_estop(self):
+        self.estop.release("teach window e-stop")
 
     def _reset_estop(self):
-        if self.estop:
-            self.estop = False
-            self.say("E-stop reset.")
+        refused = self.estop.reset()
+        if refused:
+            self.say(refused, "#b91c1c")
+        return refused
+
+    def _resume(self):
+        refused = self.estop.resume()
+        self.say(refused or "Resumed: the arm waits here for a new command.",
+                 "#b91c1c" if refused else "#1d4ed8")
+        return refused
 
     # ---- one simulation step
     def tick(self):
-        if self.estop:
-            pass
+        if self.gamepad is not None:
+            self.gamepad.poll()
+        if not self.estop.running:
+            # Stopped: cancel whatever it was doing, so nothing carries on
+            # after Resume until the operator gives a new command.
+            if self.path or self.jog is not None or np.any(self.target_q != self.q):
+                self.say("E-STOP: motion stopped and the move cancelled.", "#b91c1c")
+            self.path, self.jog = [], None
+            self.target_q = self.q.copy()
         elif self.path:
             self._apply(self.path.pop(0))
             if not self.path:
@@ -239,6 +264,10 @@ class TeachWindow:
             else:
                 self._apply(self.q + dq)
         self._readout()
+        if self.estop.running:
+            self.banner.configure(text="", bg=self.root.cget("bg"))
+        else:
+            self.banner.configure(text=self.estop.text(), bg=BANNER_COLOURS[self.estop.colour()])
 
     def _jog_step(self, axis, sign):
         T = self.robot.fkine(self.q)

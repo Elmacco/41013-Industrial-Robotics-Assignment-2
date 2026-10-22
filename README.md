@@ -61,6 +61,7 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
 | `python -m barista.milk_scene` | The Doosan M0609 milk station on its own (model: [Doosan-M0609/README.md](Doosan-M0609/README.md); station: [barista/MILK_STATION.md](barista/MILK_STATION.md)) |
 | `python -m barista.doosan_demo` | The M0609 one technique at a time, for the viva: model, IK, RMRC, collision avoidance, visual servoing |
 | `python -m barista.doosan_teach` | Teach window for the M0609: joint sliders, Cartesian jog, go to pose, e-stop |
+| `python -m barista.gamepad` | Checks the Xbox controller used as the physical e-stop: prints each button and the e-stop state |
 
 ### The full cell (`barista/full_scene.py`, `barista/full_layout.py`)
 
@@ -74,7 +75,8 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
     with its usual time;
   - a live queue: each order's number, status (queued, planning, being made,
     ready at the drawer, collected) and a countdown to when it can be collected;
-  - what each robot is doing, the beacon colour, and an e-stop with reset.
+  - what each robot is doing, the beacon colour, a banner showing the e-stop
+    state, and E-STOP, Release, Reset and Resume buttons.
 
   Countdowns marked `~` are estimates for orders not yet started; once a batch
   is planned they come from its schedule (and stop while the e-stop is on).
@@ -86,10 +88,72 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
   load them instantly and only re-plan after the code changes. A new mix of
   drinks ordered together then takes about 2 s to schedule. `--check` never
   uses the saved plans.
-- **E-stops:** one inside the cell (on the table corner) and one outside (by the
-  kiosk). Either button freezes every robot where it is until *Reset e-stop* is
-  pressed. The beacon on its mast shows green (ready), amber (making) or red
-  (e-stop).
+- **E-stops** (`barista/estop.py`): one inside the cell (on the table corner),
+  one outside (by the kiosk), one in the order window, and a physical one, **B**
+  on a USB Xbox controller (`barista/gamepad.py`; `--no-gamepad` turns it off).
+  The shared e-stop logic works like this:
+  1. Any e-stop freezes every robot on the next frame.
+  2. Releasing it (twisting the screen e-stop out, letting go of B) restarts
+     nothing.
+  3. **Reset** (Y) acknowledges the stop. It is refused while any e-stop is
+     still pressed.
+  4. A separate **Resume** (A) restarts. The robots carry on from the exact
+     frame they stopped on, along paths that were collision checked before
+     anything moved.
+
+  Unplugging the controller counts as pressing the e-stop. The beacon on its
+  mast shows green (ready), amber (making), red (e-stop) or blue (reset,
+  waiting for Resume). Nothing waits in a loop while stopped: the normal frame
+  loop just holds the frame. These are a simulation's buttons, not a certified
+  safety system. `python -m barista.gamepad` checks the controller and prints
+  its button numbers.
+- **Rechecking before a restart:** the plans were checked against the cell as
+  it was when they were made. Something left in the cell afterwards would not
+  be in them, so Reset rechecks first.
+  - **The test objects.** Buttons in the order window and in Swift leave a box
+    in the UR3's path or a box in a clear corner. They stand in for what a
+    light curtain or camera would report. Leaving one while the robots are
+    moving trips the e-stop.
+  - **What Reset checks.** It tests every robot, and whatever it is
+    carrying, against anything left in the cell, at every remaining frame of
+    the batch. If something is in the way, Reset is refused with the reason,
+    for example *"the UR3's cup would hit the box in the UR3's path in 3.8 s
+    - remove it, then Reset"*. The robots stay stopped until the cell is
+    cleared.
+  - **What is out of the way.** A box out of the way passes the check, and
+    the batch carries on.
+  - **New orders.** A new batch that would hit something left in the cell
+    waits at the front of the queue, and starts once the cell is cleared.
+  - **No re-planning.** The robots never re-plan round the obstacle mid-drink:
+    with cups and the portafilter mid-move, staying stopped is the safe
+    recovery.
+- **Maintenance doorway** (`barista/safety.py`): staff get in through a
+  doorway in the right-hand glass. It has no door. Instead:
+  - an **area scanner** watches the floor in front of it, and anyone there
+    slows every robot to **50 %** (same paths, shown at half rate) until they
+    leave;
+  - a **light curtain** across the doorway, and presence sensing inside the
+    cell, stop every robot through the e-stop latch. The robots stay stopped
+    until the person is out, then Reset (with the path recheck), then Resume.
+
+  "Staff member" buttons in the order window and in Swift send the person (in
+  hi-vis) to the door, into the cell, or away. They walk there themselves.
+  The sensors read where they are every frame, so the signals arrive
+  whenever the person gets there, not at set points in the robots' program.
+- **Safety equipment and measures, by risk:**
+
+  | Risk | What deals with it |
+  | --- | --- |
+  | Someone reaching a moving robot | Clear 2 m walls all round; the drawer slot fits only the tray, behind a shroud |
+  | Staff coming to the cell | Floor tape marking the zone; area scanner (reduced speed); warning sign at the doorway |
+  | Staff entering | Light curtain and presence sensing (protective stop); restart only by Reset then Resume once clear |
+  | Something left in a robot's path | Recheck of the remaining paths before any restart; new batches wait until the cell is clear |
+  | Anything else | Four e-stops (inside, outside, order window, Xbox controller B) |
+  | Knowing the state from outside | Beacon on a mast (green, amber, red, blue) and banners on the screens |
+  | Robots or carried objects colliding | Every path collision checked before anything moves; robot pairs checked at every frame |
+  | Fire | Extinguisher by the maintenance doorway |
+
+  This is a simulation for teaching, not a certified safety system.
 - **One order:**
   1. The cup dispenser (a clear tube holding a stack of cups) drops a cup, and
      the UR3 puts it under the espresso machine's group head.

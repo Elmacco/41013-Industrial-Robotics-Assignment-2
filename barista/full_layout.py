@@ -187,6 +187,17 @@ ESTOP_IN_AT = (TABLE_X[1] - 0.10, TABLE_Y[0] + 0.10)   # table corner, inside th
 # Status light on a mast in the front corner of the cell; BEACON_AT is the mast top.
 BEACON_AT = (ENCLOSURE_CENTRE[0] + INNER[0] - 0.10, FRONT_Y - 0.10, GLASS_H)
 
+# ---------------------------------------------------------------- maintenance access
+# A doorway in the right-hand glass for staff (refilling, cleaning). It has no
+# door: a light curtain across the opening and an area scanner on the floor in
+# front of it watch it instead (see safety.py), so the cell reacts to someone
+# coming, not just to a door being opened.
+DOOR_X = ENCLOSURE_CENTRE[0] + INNER[0] + GLASS_T / 2     # centreline of the right glass
+DOOR_Y = -0.55                                            # middle of the doorway
+DOOR_W = 0.90
+SCAN_DEPTH = 1.20         # how far out from the glass the area scanner watches
+SCAN_HALF_W = DOOR_W / 2 + 0.60
+
 
 # ---------------------------------------------------------------- helpers
 def _shift(entries, dx, dy):
@@ -229,7 +240,16 @@ def hazard_tape(x_range, y_range, skip=(), prefix="tape"):
 PROPS = {
     "drawer_tray": ("Tray", (DRAWER_X, DRAWER_Y_IN, DRAWER_Z, 0.0), None),   # full_scene slides it
     "estop_outside": ("emergencyStopButton", (*ESTOP_OUT_AT, 0.80, 0.0), None),
-    "customer": ("personFemaleBusiness", (DRAWER_X, FRONT_Y + 0.90, 0.0, -pi / 2), None),
+    "customer": ("personFemaleBusiness", (DRAWER_X, FRONT_Y + 0.90, 0.0, -pi), None),
+    # Maintenance doorway: a light curtain each side (two stacked, covering
+    # 0.15-1.8 m), the area scanner on the floor beside it, a warning sign and
+    # an extinguisher by the way in.
+    **{f"curtain_{side}_{level}": ("SafetyLightCurtain",
+                                   (DOOR_X + 0.07, DOOR_Y + sign * (DOOR_W / 2 + 0.06), z, 0.0), None)
+       for side, sign in (("l", -1), ("r", 1)) for level, z in (("low", 0.15), ("high", 0.97))},
+    "area_scanner": ("ProximitySensor", (DOOR_X + 0.15, DOOR_Y + DOOR_W / 2 + 0.25, 0.0, 0.0), None),
+    "door_warning_sign": ("WarningSign", (DOOR_X + 0.35, DOOR_Y - DOOR_W / 2 - 0.35, 0.0, pi / 2), None),
+    "fire_extinguisher": ("FireExtinguisher", (DOOR_X + 0.20, DOOR_Y - DOOR_W / 2 - 0.75, 0.0, pi / 2), None),
 }
 
 # ---------------------------------------------------------------- placeholders
@@ -300,8 +320,14 @@ PLACEHOLDERS = {
     # ---- clear enclosure: four walls on the floor and a slot for the drawer. No
     # roof (it blocked the camera); the walls stand well above anything a robot
     # can reach.
-    **_shift(build.guard_walls(INNER, GLASS_H, GLASS_T, GLASS_COLOR,
-                               opening=(SLOT_W, SLOT_Z0, SLOT_Z1), prefix="glass"), _cx, _cy),
+    **{k: v for k, v in _shift(build.guard_walls(INNER, GLASS_H, GLASS_T, GLASS_COLOR,
+                                                 opening=(SLOT_W, SLOT_Z0, SLOT_Z1), prefix="glass"),
+                               _cx, _cy).items() if k != "glass_right"},
+    # The right-hand glass in two panels either side of the maintenance doorway.
+    "glass_right_back": _box((GLASS_T, DOOR_Y - DOOR_W / 2 - (_cy - _oy), GLASS_H),
+                             (DOOR_X, (_cy - _oy + DOOR_Y - DOOR_W / 2) / 2, 0.0, 0.0), GLASS_COLOR),
+    "glass_right_front": _box((GLASS_T, _cy + _oy - (DOOR_Y + DOOR_W / 2), GLASS_H),
+                              (DOOR_X, (_cy + _oy + DOOR_Y + DOOR_W / 2) / 2, 0.0, 0.0), GLASS_COLOR),
 
     # ---- safety tape on the floor just outside the glass
     **hazard_tape((_cx - _ox - TAPE_OFFSET, _cx + _ox + TAPE_OFFSET),
@@ -368,6 +394,7 @@ LABELS = [
     ("E-STOP", (*ESTOP_OUT_AT, 1.10), False),
     ("E-STOP", (ESTOP_IN_AT[0], ESTOP_IN_AT[1] + 0.10, _T), True),
     ("ORDER HERE", (*KIOSK_AT, 1.27), False),
+    ("MAINTENANCE ACCESS", (DOOR_X + 0.05, DOOR_Y, GLASS_H + 0.02), False),
 ]
 
 

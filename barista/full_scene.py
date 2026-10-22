@@ -19,10 +19,16 @@ One order:
     6. the drawer slides out through the glass, the customer takes the cup,
        and the drawer comes back
 
-In Swift, the tablet's buttons queue orders. Either e-stop button (the one
-inside the cell or the one outside) freezes every robot where it is until
-"Reset e-stop" is pressed. The beacon on its mast shows green (ready), amber
-(making a drink) or red (e-stop).
+In Swift, the tablet's buttons queue orders. Any e-stop (inside the cell,
+outside it, in the order window, or B on a USB game controller) freezes every
+robot where it is. Releasing it restarts nothing: it takes Reset (Y), then a
+separate Resume (A), and the robots carry on along their collision-checked
+paths from the exact frame they stopped on (see estop.py). Reset first
+rechecks the rest of those paths against anything left in the cell since they
+were planned (the "Leave a box" buttons), and refuses if anything is in the
+way. The beacon on its
+mast shows green (ready), amber (making a drink), red (e-stop) or blue (reset,
+waiting for Resume).
 
 The robots work at the same time (see OrderPlanner): each robot's moves are
 planned and collision checked against the cell, then schedule.py runs them
@@ -36,6 +42,7 @@ import pickle
 import sys
 import tempfile
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from math import atan2, degrees, hypot, pi, radians
@@ -55,6 +62,8 @@ from barista import milk_scene  # noqa: E402
 from barista.collision import CS66 as CS66_MODEL, UR3 as UR3_MODEL  # noqa: E402
 from barista.collision import Box, CollisionChecker, box_from_spec, frozen  # noqa: E402
 from barista.cup import GLASS, Cup  # noqa: E402
+from barista.estop import EStop  # noqa: E402
+from barista.safety import Safety  # noqa: E402
 from barista.planner import DT, Planner, PlanningError, Segment  # noqa: E402
 from barista.schedule import Lane, Signal, Step, Wait, schedule  # noqa: E402
 
@@ -217,6 +226,11 @@ def plan_runner(scene, checker, start, end, label="UR3"):
         carry_around(pl, f"slide cup out ({start})", U, cup_flange, (a_ang, a_r - DRAW_OUT, a_z + 0.01))
     else:
         pl.line_move("lift cup", cup_flange(SE3.Tz(LIFT) * a), 0.8)
+    # Rise to carry height before swinging round, so the cup never sweeps low
+    # across the bench (the drawer tray sits between the espresso machine and
+    # the hand-off).
+    c_ang, c_r, _, _ = arc_coords(U, pl.fk_held(pl.q))
+    carry_around(pl, "raise cup", U, cup_flange, (c_ang, c_r, z_carry))
     if end in OVERHEAD:
         carry_around(pl, f"carry cup to {end}", U, cup_flange, (b_ang, b_r - DRAW_OUT, z_carry),
                      (b_ang, b_r - DRAW_OUT, b_z + 0.01), (b_ang, b_r, b_z + 0.01))
@@ -354,7 +368,11 @@ def static_obstacles():
     return [box_from_spec(n, s) for n, s in layout.PLACEHOLDERS.items()
             if not n.startswith(layout.NOT_OBSTACLES)] + [
         box_from_spec("tamper_piston", dict(shape="cylinder", size=(piston["radius"], piston["height"]),
-                                            pose=(*layout.around(layout.CS66_BASE, a, r), piston["up_z"], 0.0)))
+                                            pose=(*layout.around(layout.CS66_BASE, a, r), piston["up_z"], 0.0))),
+        # The drawer tray is a moving prop, not a placeholder, so it is added
+        # here where it rests (inside the cell, where the UR3 loads it).
+        box_from_spec("drawer_tray", dict(shape="box", size=layout.DRAWER_SIZE,
+                                          pose=(layout.DRAWER_X, layout.DRAWER_Y_IN, layout.DRAWER_Z, 0.0))),
     ] + label_obstacles()
 
 
@@ -399,10 +417,19 @@ def make_checkers(scene):
 GRASPS = {"runner": GRASP_CUP, "milk": milk_scene.GRASP, "espresso": GRASP_PF}
 HOMES = {"runner": UR3_HOME_Q, "milk": milk_scene.HOME_Q, "espresso": CS66_HOME_Q}
 LABELS = {"runner": "UR3", "milk": "M0609", "espresso": "CS66"}
+HELD = {"runner": "cup", "milk": "pitcher", "espresso": "portafilter"}
 # Who keeps moving when two robots would clash: the CS66 holds the most
 # delicate thing (a locked-in portafilter), the M0609's steaming can always wait.
 PRIORITY = {"espresso": 3, "runner": 2, "milk": 1}
 CUP_POOL = 5                 # cups that can be in flight at once (one per order)
+
+# Things someone might leave in the cell after the plans were made: name ->
+# (centre x, y on the bench, box size). They stand in for what a light curtain
+# or camera would report; the buttons on the screens place and remove them.
+DROPPED = {
+    "box in the UR3's path": ((1.40, 0.05), (0.18, 0.18, 0.30)),
+    "box in a clear corner": ((0.85, -0.60), (0.18, 0.18, 0.30)),
+}
 
 
 def event(name, duration, **effects):
@@ -434,10 +461,16 @@ def _drawer_segments():
 PLAN_CACHE = Path(tempfile.gettempdir()) / "barista_plans"
 
 
+# Files that only drive screens, inputs or other demos: changing them cannot
+# change a plan, so they are left out of the saved plans' name.
+NOT_PLANNING = {"kiosk_window.py", "estop.py", "gamepad.py", "safety.py", "doosan_demo.py", "doosan_teach.py"}
+
+
 def _code_hash():
     h = hashlib.md5()
     for f in sorted(Path(__file__).parent.glob("*.py")):
-        h.update(f.read_bytes())
+        if f.name not in NOT_PLANNING:
+            h.update(f.read_bytes())
     return h.hexdigest()[:12]
 
 
@@ -639,7 +672,8 @@ def build_scene(env=None):
                         for _ in range(layout.CUP_STACK)]
     lamp = dict(shape="cylinder", size=(0.035, 0.06), pose=(0, 0, 0, 0))
     scene.beacon = {c: build.make_placeholder(dict(lamp, color=rgba)) for c, rgba in
-                    (("green", (0.1, 0.9, 0.2, 1)), ("amber", (1.0, 0.65, 0.0, 1)), ("red", (1.0, 0.1, 0.1, 1)))}
+                    (("green", (0.1, 0.9, 0.2, 1)), ("amber", (1.0, 0.65, 0.0, 1)),
+                     ("red", (1.0, 0.1, 0.1, 1)), ("blue", (0.15, 0.35, 1.0, 1)))}
     scene.labels = [shape for text, at, flat in layout.LABELS
                     for shape in labels.make_sign(text, at, layout.CAMERA["position"],
                                                   layout.LABEL_HEIGHT, flat)]
@@ -867,13 +901,27 @@ class Cell:
         self.active = []              # Orders in the batch being made
         self.done = deque(maxlen=4)   # recently collected, still shown
         self.next_id = 1
-        self.estop = None             # which e-stop is latched, or None
+        self.estop = EStop()          # shared by every e-stop input
+        self.safety = Safety(self.estop, env)   # maintenance-door sensors and a staff member
+        self.gamepad = None           # the physical e-stop (gamepad.py), if used
+        self.message = ""             # last refused reset/resume, for the screens
+        self._estop_was = self.estop.state
         self.state = "ready"
         self.batch_left = 0.0         # seconds until the current batch finishes
         self.windows = []             # things to update every step
         self.warming = False          # warm_up() still planning drinks
         self.status = self.queue_label = None
         self._shown = None
+        # Things left in the cell since the plans were made (see DROPPED), and
+        # the batch being made with the frame it is on, for the recheck.
+        self.dropped = {}
+        self.timeline, self.frame = None, 0
+        self._blocked = None          # (drinks, dropped) of a batch refused for an obstacle
+        self._drop_shapes = {name: geometry.Cuboid(scale=list(size), pose=HIDDEN, color=(0.85, 0.45, 0.1, 1))
+                             for name, (_, size) in DROPPED.items()}
+        if env is not None:
+            for shape in self._drop_shapes.values():
+                env.add(shape)
 
     @staticmethod
     def menu():
@@ -893,13 +941,25 @@ class Cell:
         self.env.add(self.queue_label)
         self.env.add(swift.Button(lambda _e: self.press_estop("inside the cell"), desc="E-STOP (inside cell)"))
         self.env.add(swift.Button(lambda _e: self.press_estop("outside the cell"), desc="E-STOP (outside)"))
-        self.env.add(swift.Button(lambda _e: self.reset_estop(), desc="Reset e-stop"))
+        self.env.add(swift.Button(lambda _e: self.release_estop(), desc="Release e-stop (twist)"))
+        self.env.add(swift.Button(lambda _e: self.reset_estop(), desc="Reset"))
+        self.env.add(swift.Button(lambda _e: self.resume(), desc="Resume"))
+        for name in DROPPED:
+            self.env.add(swift.Button(lambda _e, n=name: self.place(n), desc=f"Leave a {name}"))
+        self.env.add(swift.Button(lambda _e: self.clear_dropped(), desc="Clear the cell"))
+        for where, text in self.staff_moves():
+            self.env.add(swift.Button(lambda _e, w=where: self.safety.send(w), desc=f"Staff: {text}"))
 
     def warm_up(self):
         """Plan every drink on its own in the background, so the first order of
         each is ready to go (and its typical time is known)."""
         def work():
             for drink in MENU:
+                # An order goes first: let it have the planner, and carry on
+                # once its batch is made (this is a background thread, so the
+                # sleep holds up nothing on screen).
+                while self.queue or self.active:
+                    time.sleep(0.5)
                 try:
                     self.plan([drink])
                 except PlanningError as e:
@@ -918,12 +978,23 @@ class Cell:
         self.windows.append(window)
         return window
 
+    def add_gamepad(self):
+        """A USB game controller as the physical e-stop (gamepad.py)."""
+        from barista.gamepad import Gamepad
+        self.gamepad = Gamepad(self.estop, on_reset=self.reset_estop, on_resume=self.resume)
+
+    @staticmethod
+    def staff_moves():
+        return [("door", "walk up to the door"), ("inside", "step into the cell"), ("away", "walk away")]
+
     def beacon(self):
-        return "red" if self.estop else ("green" if self.state == "ready" else "amber")
+        return self.estop.colour() or ("green" if self.state == "ready" else "amber")
 
     def status_text(self):
-        if self.estop:
-            return f"E-STOP pressed ({self.estop}) - press Reset to resume"
+        if not self.estop.running:
+            return self.estop.text() + (f"  ({self.message})" if self.message else "")
+        if self.safety.speed < 1.0:
+            return f"Reduced speed - {self.safety.text()}. " + self.state[:1].upper() + self.state[1:]
         if self.warming and self.state == "ready":
             return "Ready (still planning some drinks in the background)"
         return self.state[:1].upper() + self.state[1:]
@@ -963,7 +1034,8 @@ class Cell:
         self._estimate_queue()
         rows = [dict(id=o.id, drink=o.drink, status=o.status, eta=o.eta, estimate=o.estimate)
                 for o in [*self.done, *self.active, *self.queue]]
-        return dict(orders=rows, status=self.status_text(), beacon=self.beacon(),
+        return dict(orders=rows, status=self.status_text(), beacon=self.beacon(), estop=self.estop.state,
+                    slow=self.safety.speed < 1.0,
                     typical={d: self.typical(d) for d in MENU})
 
     # ---- controls
@@ -976,27 +1048,106 @@ class Cell:
         return o
 
     def press_estop(self, where):
-        if self.estop is None:
-            print(f"  E-STOP pressed {where}: all robots halted")
-        self.estop = where
+        """A screen's e-stop button. It latches, like a mushroom head, until
+        release_estop() (the twist to release)."""
+        self.message = ""
+        self.estop.press(f"e-stop {where}")
+        self._show()
+
+    def release_estop(self):
+        self.message = ""
+        self.estop.release_all("e-stop ")       # the screen buttons, not the controller
         self._show()
 
     def reset_estop(self):
-        if self.estop is not None:
-            print("  e-stop reset: resuming")
-        self.estop = None
+        """Acknowledge the stop, but only if the rest of the batch is still
+        clear of anything left in the cell since it was planned."""
+        hit = self.recheck() if self.estop.state == "released" else None
+        self.message = (f"Can't reset: {hit}" if hit else self.estop.reset()) or ""
+        self._show()
+        return self.message or None
+
+    # ---- things left in the cell
+    @staticmethod
+    def dropped_names():
+        return list(DROPPED)
+
+    def place(self, name):
+        """Something is left in the cell. If the robots are moving, that is an
+        intrusion: it trips the e-stop, as a light curtain would."""
+        (x, y), size = DROPPED[name]
+        T = SE3(x, y, layout.TABLE_TOP_Z + size[2] / 2).A
+        self.dropped[name] = Box(name, T, np.array(size) / 2)
+        self._drop_shapes[name].T = T
+        print(f"  {name} placed in the cell")
+        if self.estop.running and self.timeline is not None:
+            self.estop.press(f"{name} placed")
+            self.estop.release(f"{name} placed")
         self._show()
 
+    def clear_dropped(self):
+        for name in self.dropped:
+            self._drop_shapes[name].T = HIDDEN.A
+        if self.dropped:
+            print("  cell cleared")
+        self.dropped = {}
+        self.message = ""
+        self._show()
+
+    def first_hit(self, timeline, start=0, margin=0.01):
+        """The first time, from frame `start` on, that any robot (or what it
+        holds) would come within `margin` of something left in the cell:
+        (seconds from start, robot, part, thing), or None if all clear.
+
+        Everything else was checked when the batch was planned, so only the
+        new things need testing. A robot standing still repeats the same row,
+        so each (segment, row) is tested once."""
+        if not self.dropped:
+            return None
+        boxes = list(self.dropped.values())
+        caps = {name: self.plan._capsules(name) for name in LABELS}
+        seen = set()
+        for f in range(start, len(timeline.frames)):
+            for lane, (step, k, _) in timeline.frames[f].items():
+                key = (lane, id(step.seg), k)
+                if lane not in caps or key in seen:
+                    continue
+                seen.add(key)
+                for cap in caps[lane](step.seg, k):
+                    for box in boxes:
+                        if np.min(box.distance(cap.pts)) - cap.radius < margin:
+                            part = HELD[lane] if cap.name == "held" else cap.name.replace("_", " ")
+                            return (f - start) * DT, LABELS[lane], part, box.name
+        return None
+
+    def recheck(self):
+        """Why the rest of the current batch is not safe to resume, or None."""
+        if self.timeline is None:
+            return None
+        hit = self.first_hit(self.timeline, self.frame)
+        if hit is None:
+            return None
+        t, robot, part, thing = hit
+        return f"the {robot}'s {part} would hit the {thing} in {t:.1f} s - remove it, then Reset"
+
+    def resume(self):
+        self.message = self.estop.resume() or ""
+        self._show()
+        return self.message or None
+
     # ---- running
-    def _tick(self):
+    def step(self):
+        """One frame: read the physical e-stop, draw, let the screens take clicks.
+        env.step waits out the frame (realtime), so no loop here ever spins."""
+        if self.gamepad is not None:
+            self.gamepad.poll()
+        self.safety.update(DT)
+        if self.estop.state != self._estop_was:      # a refusal no longer applies
+            self._estop_was, self.message = self.estop.state, ""
+        self._show()
         self.env.step(DT)
         for w in self.windows:
             w.update()
-
-    def step(self):
-        self._tick()
-        while self.estop is not None and not self.closed():   # frozen: keep the screens alive
-            self._tick()
 
     def closed(self):
         return any(w.closed for w in self.windows)
@@ -1036,12 +1187,40 @@ class Cell:
             return
 
         timeline = result["timeline"]
+        hit = self.first_hit(timeline)
+        if hit:
+            # Planned before the obstacle was there: don't start it. The orders
+            # wait at the front of the queue until the cell is cleared.
+            t, robot, part, thing = hit
+            print(f"  not starting {names}: the {robot}'s {part} would hit the {thing} after {t:.0f} s")
+            self._blocked = (tuple(drinks), tuple(sorted(self.dropped)))
+            for o in reversed(orders):
+                o.status = f"waiting - clear the {thing}"
+                self.queue.appendleft(o)
+            self.active = []
+            self.state = f"waiting: the {thing} is in the way - clear the cell"
+            self._show()
+            return
         marks = ready_frames(timeline)
         total = len(timeline.frames)
         print(f"  making {names}: {timeline.duration:.0f} s")
-        for f, frame in enumerate(timeline.frames):
+        self.timeline = timeline
+        f, progress = 0, 0.0
+        while f < total:
+            self.frame = f
             if self.closed():
                 return
+            if not self.estop.running:
+                self.step()                   # stopped: hold this frame, keep the screens live
+                continue
+            # Reduced speed (someone near the maintenance door): the same
+            # path, but each frame shows for 1/speed ticks.
+            progress += self.safety.speed
+            if progress < 1.0:
+                self.step()
+                continue
+            progress -= 1.0
+            frame = timeline.frames[f]
             self.batch_left = (total - f) * DT
             for i, o in enumerate(orders):
                 ready, gone = marks[i]
@@ -1059,8 +1238,10 @@ class Cell:
             self._show()
             apply_frame(self.scene, frame)
             self.step()
+            f += 1
         self.done.extend(self.active)
         self.active = []
+        self.timeline = None
         self.batch_left = 0.0
         self.state = "ready"
         self._show()
@@ -1073,7 +1254,8 @@ class Cell:
                 return False
             return not stop.is_set() if stop is not None else (bool(self.queue) or bool(self.windows))
         while keep_going():
-            if self.queue:
+            blocked = (tuple(o.drink for o in self.queue), tuple(sorted(self.dropped))) == self._blocked
+            if self.queue and self.estop.running and not blocked:
                 orders = list(self.queue)
                 self.queue.clear()
                 self.make(orders)
@@ -1125,6 +1307,8 @@ def main(argv=None):
                         help="no desktop order window (order from the Swift tablet buttons instead)")
     parser.add_argument("--check", action="store_true",
                         help="plan and schedule every drink, and a batch, without Swift and exit")
+    parser.add_argument("--no-gamepad", action="store_true",
+                        help="don't use a USB game controller as the physical e-stop")
     args = parser.parse_args(argv)
     if args.check:
         sys.exit(0 if _check_all() else 1)
@@ -1137,6 +1321,8 @@ def main(argv=None):
     env.set_camera_pose(list(layout.CAMERA["position"]), list(layout.CAMERA["look_at"]))
     cell = Cell(scene, env)
     cell.add_ui()
+    if not args.no_gamepad:
+        cell.add_gamepad()
     for drink in args.order:
         cell.order(drink)
     env.step(DT)

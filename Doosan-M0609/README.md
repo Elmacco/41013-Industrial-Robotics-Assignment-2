@@ -77,10 +77,28 @@ The table above is that result, written with exact pi/2 values.
 
 ## How it looks
 
-Each Doosan mesh belongs to one link, so it is fixed to that link's DH frame by
-a constant transform: (DH frame)^-1 x (Doosan's link frame), both taken at
-q = 0. It stays constant because both frames move with the link. This gives
-the real robot's shape and proportions instead of cylinders.
+The meshes are placed the way the subject's `DHRobot3D` places the UR3's
+(`ir_support/robots/UR3/UR3.py`): a reference pose `QTEST` plus
+`QTEST_TRANSFORMS`, where each link's mesh sits in that pose. Each mesh is
+then fixed to its link's DH frame by a constant relation matrix:
+
+    relation = (DH frame at QTEST)^-1 x (mesh pose at QTEST)
+    mesh pose at q = (DH frame at q) x relation
+
+It stays constant because both frames move with the link.
+
+The lectures gave two ways to get the mesh poses. The first is to move the
+meshes in Blender and re-export them, so the transforms become identity. The
+second is to find each mesh's transform and apply it in code. I used the
+second way, without Blender. Doosan draws each mesh in its own link frame,
+so with the arm straight up (`QTEST = 0`) the transforms are just the joint
+offsets along the arm (0.1345, 0.411, 0.368, 0.121 m and the 6.2 mm elbow
+step) and how each frame is turned. They are written out in
+`barista/doosan_m0609.py` and match Doosan's URDF to within 0.21 mm, since the
+URDF rounds pi/2 to 1.571.
+
+One difference from `DHRobot3D`: several meshes can belong to one link (the
+upper arm has three), so the class keeps a list of (link, relation, mesh).
 
 ## Collision model
 
