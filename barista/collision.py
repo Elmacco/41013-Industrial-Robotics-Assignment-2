@@ -34,9 +34,15 @@ class Box:
 
     def distance(self, pts):
         """Signed distance from each point to the box (negative inside)."""
+        # Points into the box frame (inverse of T), so the box is axis-aligned
+        # and centred on the origin.
         local = (pts - self.T[:3, 3]) @ self.T[:3, :3]
+        # How far past each face the point is (abs: the box is symmetric).
         q = np.abs(local) - self.half
+        # Outside: distance to the nearest point on the surface.
         outside = np.linalg.norm(np.maximum(q, 0.0), axis=1)
+        # Inside: minus the depth to the nearest face (this is what catches a
+        # link lying wholly inside a box, which Lab 5's face test misses).
         inside = np.minimum(np.max(q, axis=1), 0.0)
         return outside + inside
 
@@ -66,6 +72,8 @@ class Capsule:
 
 
 def capsule_gap(a: Capsule, b: Capsule):
+    """Clearance between two capsules: closest pair of axis points, minus both
+    radii. Negative means they overlap."""
     d = np.min(np.linalg.norm(a.pts[:, None, :] - b.pts[None, :, :], axis=2))
     return d - a.radius - b.radius
 
@@ -212,19 +220,26 @@ class CollisionChecker:
         self._held_lo, self._held_hi = pts.min(0) - r, pts.max(0) + r
 
     def capsules(self, q, holding=False, held_T=None):
+        """Every capsule of the arm at joint angles q, placed in the world by
+        forward kinematics."""
         caps = []
+        # UR3 / CS66: capsules run between DH frame origins.
         if self.model.links:
             frames = self.model.frames(self.robot, q)
             caps += [Capsule(name, sample(frames[a], frames[b]), rad)
                      for name, a, b, rad in self.model.links]
+        # M0609: capsules fixed in each link's own frame, moved into the world
+        # by that link's transform (R @ p + t).
         if self.model.local:
             link_T = [T.A for T in self.robot.fkine_all(q)]
             for name, link, p0, p1, rad in self.model.local:
                 T = link_T[link]
                 caps.append(Capsule(name, sample(T[:3, :3] @ p0 + T[:3, 3], T[:3, :3] @ p1 + T[:3, 3]), rad))
+        # Gripper: one capsule straight out of the flange along its z axis.
         flange = self.robot.fkine(q)
         tip = (flange * SE3.Tz(self.model.gripper_len)).t
         caps.append(Capsule("gripper", sample(flange.t, tip), self.model.gripper_radius))
+        # Held object: carried with the arm, so it is checked like a link.
         if holding:
             for a, b, rad in self.held:
                 caps.append(Capsule("held", sample((held_T * SE3(*a)).t, (held_T * SE3(*b)).t), rad))
@@ -238,12 +253,18 @@ class CollisionChecker:
         return self.held_name if name == "held" else name
 
     def worst(self, q, holding, held_T):
-        """(clearance, what) for the tightest spot at configuration q."""
+        """(clearance, what) for the tightest spot at configuration q.
+
+        Clearance < 0 means a collision. Three tests, keeping the smallest:
+        arm vs boxes, arm vs other robots, arm vs itself.
+        """
         caps = self.capsules(q, holding, held_T)
         obstacles = list(self.obstacles)
+        # Not holding it: the object is standing somewhere, so it is an obstacle.
         if not holding and held_T is not None:
             obstacles.append(self.resting_box(held_T))
         best = (np.inf, "")
+        # 1) Environment and 2) other robots.
         for cap in caps:
             if cap.name == "base":
                 continue                      # bolted to the table
@@ -253,6 +274,8 @@ class CollisionChecker:
                     continue
                 if cap.name == "gripper" and box.name == self.held_name:
                     continue                  # it grips it
+                # Closest axis point to the box, minus the capsule's radius
+                # and the safety margin.
                 c = float(np.min(box.distance(cap.pts))) - cap.radius - margin
                 if c < best[0]:
                     best = (c, f"{self._label(cap.name)} / {box.name}")
@@ -260,6 +283,8 @@ class CollisionChecker:
                 c = capsule_gap(cap, other) - margin
                 if c < best[0]:
                     best = (c, f"{self._label(cap.name)} / {other.name}")
+        # 3) Self-collision, only for link pairs that can actually meet
+        # (neighbouring links always touch at their joint).
         by_name = {}
         for c in caps:
             by_name.setdefault(c.name, []).append(c)
@@ -275,7 +300,11 @@ class CollisionChecker:
         """Index and description of the first colliding row of qs, or None.
 
         fk_held(q) gives the held object's pose while it is held.
+
+        This is what the planner calls on every path before it is allowed to
+        run (Planner.collision -> Planner._add).
         """
+        # Every step of the trajectory, in order.
         for k, q in enumerate(qs):
             P = fk_held(q) if (holding and fk_held) else held_T
             c, what = self.worst(q, holding, P)
