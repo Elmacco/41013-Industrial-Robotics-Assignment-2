@@ -28,12 +28,11 @@ from spatialmath import SE3
 
 # Allow running a scene file directly (e.g. VS Code's Run button), not just -m.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from barista.aubo_i5 import AuboI5  # noqa: E402
 from barista.cs66 import CS66  # noqa: E402
 from barista.doosan_m0609 import DoosanM0609  # noqa: E402
 
 # Robots that are not in ir_support, by their layout model name.
-CUSTOM_ROBOTS = {"CS66": CS66, "AuboI5": AuboI5, "DoosanM0609": DoosanM0609}
+CUSTOM_ROBOTS = {"CS66": CS66, "DoosanM0609": DoosanM0609}
 
 
 def pose(x, y, z, yaw):

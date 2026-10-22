@@ -101,10 +101,11 @@ def pour_state(u):
     return radians(np.interp(s, keys[:, 0], keys[:, 1])), float(np.interp(s, keys[:, 0], keys[:, 2]))
 
 
-def pour_pose(u):
-    """Pitcher pose at pour progress u: tipped about the spout lip over the cup."""
+def pour_pose(u, cup_at=None):
+    """Pitcher pose at pour progress u: tipped about the spout lip over the cup
+    (at cup_at, default layout.CUP_AT)."""
     tilt, height = pour_state(u)
-    cx, cy = layout.CUP_AT
+    cx, cy = layout.CUP_AT if cup_at is None else cup_at
     yaw = yaw_to(cx, cy)
     r = layout.CUP_R - LIP_INSIDE_RIM                     # lip sits on the near side
     lip = SE3(cx - r * cos(yaw), cy - r * sin(yaw),
@@ -146,11 +147,13 @@ def carry(pl, name, *waypoints):
     return pl.follow(name, poses)
 
 
-def make_checker(robot, obstacles=None, others=()):
-    """Checker for the M0609. obstacles defaults to the milk station plus the cup."""
+def make_checker(robot, obstacles=None, others=(), cup_at=None):
+    """Checker for the M0609. obstacles defaults to the milk station plus the
+    cup (at cup_at, default layout.CUP_AT)."""
     if obstacles is None:
         obstacles = [box_from_spec(n, s) for n, s in layout.PLACEHOLDERS.items()]
-        obstacles.append(box_from_spec("cup", layout.CUP_SPEC))
+        cup = layout.CUP_SPEC if cup_at is None else dict(layout.CUP_SPEC, pose=(*cup_at, layout.TABLE_TOP_Z, 0.0))
+        obstacles.append(box_from_spec("cup", cup))
     return CollisionChecker(robot, obstacles, PITCHER_CAPSULE, held_name="pitcher",
                             held_skip={"steam_wand"}, others=others, model=M0609)
 
@@ -159,17 +162,19 @@ def pitcher_home():
     return on_arc(*layout.PITCHER_HOME)
 
 
-def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None, checker=None, name="milk"):
+def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None, checker=None, name="milk",
+              cup_at=None):
     """Plan one full cycle for a steam profile; returns the Segments.
 
     checker defaults to make_checker(robot); pass one to check against a bigger
-    scene. check=False plans with no collision checks at all.
+    scene. check=False plans with no collision checks at all. cup_at is where
+    to pour (default layout.CUP_AT), e.g. where visual servoing found the cup.
     """
     steam = PROFILES[profile]
     q0 = HOME_Q if q0 is None else q0
     home = pitcher_home()
     if check and checker is None:
-        checker = make_checker(robot)
+        checker = make_checker(robot, cup_at=cup_at)
     # RMRC for the Cartesian moves: the pour passes close to the M0609's wrist
     # singularity, where damped least squares keeps the motion smooth.
     pl = Planner(robot, q0, checker if check else None, grasp=GRASP, held_T=home, name=name,
@@ -197,14 +202,14 @@ def plan_task(robot, profile=DEFAULT_PROFILE, check=True, q0=None, checker=None,
     pl.line_move("lower off wand", flange(below_wand), 1.5)
 
     # Pour
-    carry(pl, "carry to cup", arc_coords(pour_pose(0.0)))
+    carry(pl, "carry to cup", arc_coords(pour_pose(0.0, cup_at)))
     n = pl._steps(POUR_DURATION)
     us = np.linspace(0.0, 1.0, n + 1)
     tilts = np.array([pour_state(u)[0] for u in us])
-    pl.follow("pour", [flange(pour_pose(u)) for u in us[1:]],
+    pl.follow("pour", [flange(pour_pose(u, cup_at)) for u in us[1:]],
               cup_level=np.array([cup_level(t) for t in tilts]),
               effects={"milk_stream": tilts > FLOW_TILT})
-    pl.line_move("level pitcher", flange(pour_pose(0.0)), 2.0)
+    pl.line_move("level pitcher", flange(pour_pose(0.0, cup_at)), 2.0)
 
     # Rinse upside down over the spray
     over_basin = on_arc(a_wash, r, WASH_HIGH)

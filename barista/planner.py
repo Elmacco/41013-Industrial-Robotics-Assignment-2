@@ -64,9 +64,6 @@ class Planner:
         self.rng = np.random.default_rng(seed)
         self.tracker = tracker              # "ik" or "rmrc", for Cartesian moves
         self.manipulability = []            # (segment name, per-row values) from RMRC moves
-        # A DH robot's ikine takes world targets; a URDF robot's solves in its
-        # base frame (though its fkine does include the base).
-        self._world_ik = isinstance(robot, rtb.DHRobot)
 
     # ---- helpers
     def _steps(self, duration):
@@ -94,9 +91,9 @@ class Planner:
         return np.where((near >= lo) & (near <= hi), near, q)
 
     def _solve(self, T, seed, ref, restarts=100):
-        target = T if self._world_ik else self.robot.base.inv() * T
+        # Every robot here is a DH model, whose ikine_LM takes world targets.
         # seed=0 keeps the solver's random restarts repeatable from run to run.
-        sol = self.robot.ikine_LM(target, q0=seed, joint_limits=True, slimit=restarts, seed=0)
+        sol = self.robot.ikine_LM(T, q0=seed, joint_limits=True, slimit=restarts, seed=0)
         if not sol.success or np.linalg.norm(self.robot.fkine(sol.q).t - T.t) > 1e-3:
             return None
         return self._unwrap(np.array(sol.q), ref)

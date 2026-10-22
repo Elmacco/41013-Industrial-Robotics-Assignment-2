@@ -58,8 +58,9 @@ See the Canvas "Python Wiki - Toolbox and Library Installation" page for full de
 | `python -m barista.full_scene` | **The full cell.** Opens Swift and an order window: order a drink, the robots make it, it comes out through the collection drawer |
 | `python -m barista.full_scene --no-window` | The same, ordering from the Swift tablet buttons instead |
 | `python -m barista.full_scene --check` | Plans every drink without Swift and reports any collision |
-| `python -m barista.milk_scene` | The Doosan M0609 milk station on its own (model: [Doosan-M0609/README.md](Doosan-M0609/README.md); station: [AUBO-i5/README.md](AUBO-i5/README.md)) |
-| `python -m barista.launch --scene <1, 2, milk, full>` | Any scene through the shared launcher |
+| `python -m barista.milk_scene` | The Doosan M0609 milk station on its own (model: [Doosan-M0609/README.md](Doosan-M0609/README.md); station: [barista/MILK_STATION.md](barista/MILK_STATION.md)) |
+| `python -m barista.doosan_demo` | The M0609 one technique at a time, for the viva: model, IK, RMRC, collision avoidance, visual servoing |
+| `python -m barista.doosan_teach` | Teach window for the M0609: joint sliders, Cartesian jog, go to pose, e-stop |
 
 ### The full cell (`barista/full_scene.py`, `barista/full_layout.py`)
 
@@ -180,7 +181,7 @@ short-lived branch and a pull request (PR) that the other person reviews.
    ```powershell
    git fetch
    git rebase origin/main
-   .\.venv\Scripts\python.exe -m barista.scene      # reach check must still pass
+   .\.venv\Scripts\python.exe -m barista.full_scene --check   # every drink must still plan
    ```
 
 4. Push and open a PR on GitHub:
@@ -189,15 +190,16 @@ short-lived branch and a pull request (PR) that the other person reviews.
    git push -u origin <your-name>/<short-task>
    ```
 
-5. The other person reviews: they pull the branch, run `python -m barista.launch` to
+5. The other person reviews: they pull the branch, run `python -m barista.full_scene` to
    look at it in Swift, then approve. Merge with **Squash and merge** and delete the branch.
 
 ### Avoiding conflicts
 
-- **Split ownership.** One person drives the espresso robot (UR3), the other the milk
-  robot (UR3e). Do the shared runner (LinearUR3) together or take turns.
-- **`barista/layout.py` is shared.** Every position lives there, so keep layout
-  changes in their own small PR and merge them quickly, separate from motion code.
+- **Split ownership.** Each person owns their own robot: the milk robot (M0609),
+  the espresso robot (CS66) and the runner (UR3).
+- **`barista/full_layout.py` is shared.** Every position in the cell lives there, so
+  keep layout changes in their own small PR and merge them quickly, separate from
+  motion code.
 - **Say what you're starting** (group chat or a GitHub issue) so two people don't edit
   the same file at once.
 - Merge at least once a day. Long-lived branches are what cause painful conflicts.

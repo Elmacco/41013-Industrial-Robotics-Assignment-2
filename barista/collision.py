@@ -71,15 +71,6 @@ def capsule_gap(a: Capsule, b: Capsule):
 
 
 # ---------------------------------------------------------------- arm models
-def _named_frames(names, base="base_link"):
-    """Frame origins of a URDF robot, looked up by link name."""
-    def frames(robot, q):
-        out = {n: robot.fkine(q, end=n).t for n in names}
-        out["base"] = robot.fkine(q, end=base).t
-        return out
-    return frames
-
-
 def _dh_frames(names):
     """Frame origins of a DH robot: the base, then one frame per joint."""
     def frames(robot, q):
@@ -107,26 +98,6 @@ class ArmModel:
     links: list = field(default_factory=list)
     local: list = field(default_factory=list)
 
-
-AUBO_I5 = ArmModel(
-    frames=_named_frames(["shoulder_Link", "upperArm_Link", "foreArm_Link",
-                          "wrist1_Link", "wrist2_Link", "wrist3_Link"]),
-    links=[
-        ("base", "base", "shoulder_Link", 0.075),
-        ("shoulder", "shoulder_Link", "upperArm_Link", 0.065),
-        ("upper_arm", "upperArm_Link", "foreArm_Link", 0.060),
-        ("forearm", "foreArm_Link", "wrist1_Link", 0.050),
-        ("wrist1", "wrist1_Link", "wrist2_Link", 0.045),
-        ("wrist2", "wrist2_Link", "wrist3_Link", 0.045),
-    ],
-    gripper_len=0.05,         # + the radius = fingertips at 0.095
-    gripper_radius=0.045,
-    # Only pairs at least two joints apart: neighbours always touch at the joint.
-    self_pairs=[(a, b) for a in ("base", "shoulder")
-                for b in ("forearm", "wrist1", "wrist2", "gripper", "held")]
-               + [("upper_arm", b) for b in ("wrist2", "gripper", "held")]
-               + [("forearm", "held")],
-)
 
 # UR3 (standard DH). Its DH frames fold the shoulder and elbow side offsets into
 # the wrist, so the capsules run between DH frame origins with UR3 link radii.
@@ -222,10 +193,11 @@ class CollisionChecker:
     :param held_skip: obstacles the held object may touch by design (the wand).
     :param others: Capsules of other robots, frozen where they wait.
     :param margin: clearance required between the arm and anything else.
+    :param model: the arm's ArmModel (M0609, UR3 or CS66).
     """
 
     def __init__(self, robot, obstacles, held, held_name="pitcher", held_skip=(),
-                 others=(), margin=0.01, model=AUBO_I5):
+                 others=(), margin=0.01, *, model):
         self.robot = robot
         self.obstacles = list(obstacles)
         self.held = held_segments(held)

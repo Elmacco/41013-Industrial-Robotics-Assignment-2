@@ -15,6 +15,8 @@ dimensions.
 | `Doosan-M0609/derive_dh.py` | Derives the DH table from Doosan's joint geometry and checks it |
 | `Doosan-M0609/m0609.urdf`, `meshes/` | Doosan's description files (BSD-3, see `LICENSE-doosan`), used for the visuals and the check |
 | `barista/collision.py` (`M0609`) | Collision capsules fitted to the meshes |
+| `barista/doosan_demo.py` | Viva demo: each technique on its own (see below) |
+| `barista/doosan_teach.py` | Teach window: joint sliders, Cartesian jog, go to pose, e-stop |
 
 ## The DH table
 
@@ -124,8 +126,9 @@ pour's 100 samples (0.15 s). Every other RMRC move tracks within 0.5 mm.
 
 ## Changes to the milk station for this arm
 
-The M0609's wrist housing is much bulkier than the AUBO's (about 10 cm radius
-against 4.5 cm), so two things changed:
+The station was first laid out for an AUBO i5, which I dropped because it is
+already in the subject's model packs. The M0609's wrist housing is much
+bulkier (about 10 cm radius against 4.5 cm), so two things changed:
 
 - **The dispenser bay is raised to 10 cm.** Gripping the pitcher in a bay at
   table height put the wrist into the table.
@@ -135,3 +138,66 @@ against 4.5 cm), so two things changed:
 
 `python -m barista.milk_scene --check` and `python -m barista.full_scene --check`
 plan every drink with it, with no collisions.
+
+## The viva demo
+
+`python -m barista.doosan_demo` runs the M0609 through each technique on its
+own, pausing for ENTER between stages (`--stage N` starts at stage N, `--only`
+runs just that one, `--no-plots` skips the plot windows). Every stage uses the
+milk station's own code, not a copy made for the demo.
+
+| Stage | Shows | What to look for |
+| --- | --- | --- |
+| 1 Model | DH table, check against Doosan's URDF, reach, DH frames on the arm while each joint turns | 0.32 mm worst error over 500 poses (the URDF's rounded pi/2); 0.900 m reach |
+| 2 IK | `ikine_LM` from 41 seeds for one pose: all 8 configurations, each scored by clearance | 4 collide (upper arm in the table); the planner takes the clearest |
+| 3 Trajectories and RMRC | The pour solved three ways | IK per sample is refused at sample 33 (a 1.30 rad flip of joints 4 and 6); `jtraj` from the pour's first pose to its last swings the spout 71 mm off the cup's axis and hits the cup; RMRC gets through. Plots manipulability, q5, damping and tracking error |
+| 4 Collision avoidance | A bottle left between the wash station and the dispenser | All 4 direct paths are blocked; a random clear via point (Lab 5's RRT step) gives a detour |
+| 5 Visual servoing | The cup 39 mm from where the plan expects it | See below |
+
+### Visual servoing (stage 5)
+
+**Why the milk robot needs it.** The UR3 puts the cup down at the hand-off
+spot, and in a real cell it will not land exactly where the plan says. A cup
+39 mm out means the pour lands 60 mm from the cup's centre, outside its 40 mm
+rim, so the milk ends up on the bench.
+
+**How.** A camera on the side of the gripper (`CentralCamera`, 8 mm lens,
+640 x 640) looks along the tool axis. Its image features are four marks round
+the cup rim. The goal image is the rim seen from 25 cm straight above the cup.
+It is the same wherever the cup is, so it is set once from the plan. Each
+step is image-based visual servoing (IBVS):
+
+    v_cam = -gain * pinv(L(p, Z)) * (p - p*)
+
+- `L` is the interaction matrix (`visjac_p`).
+- The depth Z is estimated from how big the rim looks, since the cup's size
+  is known.
+- The camera velocity becomes joint rates through the flange Jacobian,
+  shifted to the camera's position, using damped least squares.
+- Every step is collision checked.
+
+**Result.** The error halves about every 0.6 s (gain 1.2/s). It converges in
+about 4 s and finds the cup to within 0.2 mm. The whole milk cycle is then
+re-planned with `plan_task(cup_at=...)` to pour where the camera found the
+cup.
+
+In the full cell the UR3 places the cup exactly (it is a simulation), so the
+cell itself does not servo. This stage shows what the milk station does when
+the hand-off is off.
+
+## Teach window
+
+`python -m barista.doosan_teach` opens the milk station with a teach window:
+
+- **Joint sliders.** The arm follows a slider at up to 60 deg/s and stops short
+  of anything it would hit.
+- **Cartesian jog.** Hold a button to move along X, Y or Z (world or tool frame)
+  or to turn about the tool's own axes. Each step is one `rmrc_step`, so near
+  the wrist singularity the arm slows down instead of flipping. A jog stops at
+  the edge of reach.
+- **Go to pose.** Type a pose or pick a preset (home, dispenser, over the cup,
+  steam wand). The planner solves IK, takes the clearest configuration and
+  plans a collision-checked path to it.
+- **Readout.** The flange pose, the manipulability (with a warning near the
+  singularity) and the tightest clearance.
+- **E-stop and reset.**
