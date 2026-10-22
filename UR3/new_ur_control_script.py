@@ -18,7 +18,7 @@ def move_ur_joint_positions(client, joint_positions, duration=5.0):
         client.run()
 
         # Subscribe to joint states to get the current position
-        listener = roslibpy.Topic(client, '/ur/joint_states', 'sensor_msgs/JointState')
+        listener = roslibpy.Topic(client, '/joint_states', 'sensor_msgs/JointState')
         listener.subscribe(joint_state_cb)
 
         # Wait until we receive a joint state
