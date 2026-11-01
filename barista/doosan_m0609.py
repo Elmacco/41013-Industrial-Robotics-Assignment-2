@@ -1,15 +1,15 @@
 """
 Doosan M0609 cobot: a standard DH model, drawn with Doosan's link meshes.
 
-The kinematics are the DH table below (6 kg payload, 900 mm reach). It was
-derived from Doosan's joint geometry with the common-normal procedure and
-checked against Doosan's own URDF: see Doosan-M0609/derive_dh.py and
-Doosan-M0609/README.md.
+The source of truth is QTEST_TRANSFORMS: where each link's frame sits with the
+arm at QTEST, measured off the robot built in Blender. The DH table below
+(6 kg payload, 900 mm reach) is built from those joint positions with the
+common-normal procedure, and check_dh() confirms every joint axis and the
+flange land where QTEST_TRANSFORMS puts them. See Doosan-M0609/README.md.
 
-The meshes (Doosan's, BSD-3) only make it look right. They are placed the way
-the subject's DHRobot3D places the UR3's: QTEST_TRANSFORMS says where each
-link's mesh sits with the arm at QTEST, and each mesh is then fixed to its
-link's DH frame by a constant relation matrix.
+The meshes (Doosan's, BSD-3) are placed the way the subject's DHRobot3D places
+the UR3's: each mesh is fixed to its link's DH frame by a constant relation
+matrix worked out at QTEST.
 
 At q = 0 the arm stands straight up, like the real robot's home.
 """
@@ -40,11 +40,10 @@ LINK_MESHES = {
 MESH_SCALE = 0.001          # the meshes are in millimetres
 
 # A joint config and the 3D object transforms to match that config (as in the
-# subject's UR3.py). Doosan draws each mesh in its own link frame, so these are
-# Doosan's link frames with the arm standing straight up: the joint offsets
-# along the arm (0.1345, 0.411, 0.368, 0.121 and the 6.2 mm elbow step) and
-# the way each frame is turned. Within 0.21 mm of Doosan's URDF, which rounds
-# pi/2 to 1.571.
+# subject's UR3.py), measured in Blender with the arm standing straight up.
+# Each frame sits on its joint with z along the joint axis: the offsets along
+# the arm (0.1345, 0.411, 0.368, 0.121 and the 6.2 mm elbow step) and the way
+# each frame is turned. The DH table is built from these.
 QTEST = [0.0] * 6
 QTEST_TRANSFORMS = [
     spb.transl(0, 0, 0),                                                    # base
@@ -81,7 +80,7 @@ class DoosanM0609(rtb.DHRobot):
         """
         Create robot's standard DH model
 
-        Lengths from Doosan's joint geometry (Doosan-M0609/derive_dh.py):
+        Lengths from QTEST_TRANSFORMS:
         d1 0.1345 base to shoulder, a2 0.411 upper arm, d3 0.0062 elbow side
         step, d4 0.368 forearm (along z, so alpha3 turns z towards it), d6 0.121
         wrist centre to flange. a4 = a5 = d5 = 0: a spherical wrist, singular
@@ -102,6 +101,28 @@ class DoosanM0609(rtb.DHRobot):
             link = rtb.RevoluteDH(d=d[i], a=a[i], alpha=alpha[i], offset=offset[i], qlim=qlim[i])
             links.append(link)
         return links
+
+    def check_dh(self):
+        """
+        Check the DH table against QTEST_TRANSFORMS at QTEST.
+
+        DH frame i-1 has z along joint i's axis, so each measured joint frame
+        must lie on that line and point the same way, and DH frame 6 must be
+        the flange. Returns the worst angle (rad, joint axes and the flange's
+        orientation), the worst distance of a joint from its DH axis (m) and
+        the flange position error (m).
+        """
+        frames = [self.base.inv().A @ T.A for T in self.fkine_all(QTEST)]
+        angle = dist = 0.0
+        for j in range(1, 7):
+            z, o = frames[j - 1][:3, 2], frames[j - 1][:3, 3]
+            zj, p = QTEST_TRANSFORMS[j][:3, 2], QTEST_TRANSFORMS[j][:3, 3]
+            angle = max(angle, np.arccos(min(1.0, abs(z @ zj))))
+            dist = max(dist, np.linalg.norm(np.cross(p - o, z)))
+        R = frames[6][:3, :3].T @ QTEST_TRANSFORMS[6][:3, :3]
+        angle = max(angle, np.arccos(np.clip((np.trace(R) - 1) / 2, -1.0, 1.0)))
+        flange = np.linalg.norm(frames[6][:3, 3] - QTEST_TRANSFORMS[6][:3, 3])
+        return angle, dist, flange
 
     def _update_shapes(self):
         frames = self.fkine_all(self.q)        # includes the base transform

@@ -6,7 +6,7 @@ one stage at a time in Swift. Press ENTER to go on to the next stage.
     python -m barista.doosan_demo --stage 5    # start at stage 5
     python -m barista.doosan_demo --no-plots   # skip the matplotlib windows
 
-    1  the model      DH table, checked against Doosan's URDF; DH frames shown
+    1  the model      DH table, checked against the Blender frames; DH frames shown
                       while each joint turns
     2  IK             every arm configuration for one pose, scored by clearance
     3  RMRC           IK per sample fails in the pour (wrist singularity); RMRC
@@ -22,7 +22,6 @@ Each stage reuses the milk station's own code (milk_scene.py, planner.py,
 collision.py); nothing here is a separate implementation for show.
 """
 import argparse
-import importlib.util
 import sys
 import time
 from math import atan2, pi
@@ -134,17 +133,10 @@ class Demo:
             print(f"    {i}     {link.d:7.4f}   {link.a:7.4f}  {np.degrees(link.alpha):5.0f}   "
                   f"{np.degrees(link.offset):6.0f}    {lo:+5.0f} .. {hi:+.0f}")
 
-        spec = importlib.util.spec_from_file_location("derive_dh", m0609.ROOT / "derive_dh.py")
-        derive = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(derive)
-        joints = derive.urdf_joints()
-        rng = np.random.default_rng(0)
-        worst = 0.0
-        for _ in range(500):
-            q = rng.uniform(-pi, pi, 6)
-            mine = (self.robot.base.inv() * self.robot.fkine(q)).t
-            worst = max(worst, np.linalg.norm(mine - derive.urdf_fk(q, joints)[-1][:3, 3]))
-        print(f"\n  My DH model vs Doosan's URDF, 500 random poses: worst flange error {worst * 1000:.2f} mm")
+        angle, dist, flange_err = self.robot.check_dh()
+        print("\n  DH model vs the frames measured in Blender (QTEST_TRANSFORMS):")
+        print(f"    joint axes: worst {np.degrees(angle):.4f} deg off, {dist * 1000:.4f} mm from the DH z axis")
+        print(f"    flange: {flange_err * 1000:.4f} mm (orientation included in the angle above)")
         out = (self.robot.base.inv() * self.robot.fkine([0, pi / 2, 0, 0, 0, 0])).t
         print(f"  Reach (arm straight out): {np.hypot(out[0], out[1]):.3f} m   (datasheet: 0.900 m)")
         print("  Spherical wrist: d5 = a4 = a5 = 0, so joints 4-6 meet at one point")

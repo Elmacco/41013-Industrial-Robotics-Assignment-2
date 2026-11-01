@@ -11,9 +11,8 @@ dimensions.
 
 | File | What it is |
 | --- | --- |
-| `barista/doosan_m0609.py` | The model: my DH table, joint limits and the meshes |
-| `Doosan-M0609/derive_dh.py` | Derives the DH table from Doosan's joint geometry and checks it |
-| `Doosan-M0609/m0609.urdf`, `meshes/` | Doosan's description files (BSD-3, see `LICENSE-doosan`), used for the visuals and the check |
+| `barista/doosan_m0609.py` | The model: the measured link frames (`QTEST_TRANSFORMS`), my DH table, joint limits and the meshes |
+| `Doosan-M0609/meshes/` | Doosan's link meshes (BSD-3, see `LICENSE-doosan`), used for the visuals |
 | `barista/collision.py` (`M0609`) | Collision capsules fitted to the meshes |
 | `barista/doosan_demo.py` | Viva demo: each technique on its own (see below) |
 | `barista/doosan_teach.py` | Teach window: joint sliders, Cartesian jog, go to pose, e-stop |
@@ -49,12 +48,11 @@ the base axis. That matches Doosan's published 900 mm reach.
 
 ## How I derived it
 
-`python Doosan-M0609/derive_dh.py`
-
-Doosan's URDF gives each joint as a fixed transform from the previous link
-followed by a rotation about z. From it I took only where each joint axis is
-at the zero pose. Then I built the DH frames with the common-normal procedure
-from lectures:
+The source of truth is `QTEST_TRANSFORMS` in `barista/doosan_m0609.py`. I built
+the robot in Blender from Doosan's meshes and read off where each joint and
+link sits with the arm straight up (`QTEST = 0`): every frame is on its joint,
+with z along the joint axis. From those joint axes I built the DH frames with
+the common-normal procedure from lectures:
 
 1. z(i-1) is the axis of joint i.
 2. x(i) lies along the common normal from z(i-1) to z(i). If the axes
@@ -65,15 +63,15 @@ from lectures:
    from z(i-1) to z(i) about x(i).
 4. The last frame goes at the flange, along the joint 6 axis.
 
-The table above is that result, written with exact pi/2 values.
+The table above is that result.
 
 ## How I know it is right
 
-1. **Derived table vs Doosan's URDF:** over 2000 random joint poses, the flange
-   position matches to 0.000000 mm.
-2. **Hand-written table (exact pi/2) vs Doosan's URDF:** within 0.31 mm.
-   Doosan's URDF rounds pi/2 to 1.571, which accounts for the difference.
-3. **Reach:** 0.900 m, matching the datasheet.
+1. **DH table vs the Blender frames** (`DoosanM0609.check_dh()`): at `QTEST`,
+   every joint axis lies on its DH z axis (0.0000 deg off, 0.0000 mm away) and
+   DH frame 6 is the flange frame, in position (0.0000 mm) and orientation. A revolute arm's motion is set by
+   its joint axes, so matching them at one pose fixes it at every pose.
+2. **Reach:** 0.900 m, matching the datasheet.
 
 ## How it looks
 
@@ -90,12 +88,11 @@ It stays constant because both frames move with the link.
 The lectures gave two ways to get the mesh poses. The first is to move the
 meshes in Blender and re-export them, so the transforms become identity. The
 second is to find each mesh's transform and apply it in code. I used the
-second way, without Blender. Doosan draws each mesh in its own link frame,
-so with the arm straight up (`QTEST = 0`) the transforms are just the joint
-offsets along the arm (0.1345, 0.411, 0.368, 0.121 m and the 6.2 mm elbow
-step) and how each frame is turned. They are written out in
-`barista/doosan_m0609.py` and match Doosan's URDF to within 0.21 mm, since the
-URDF rounds pi/2 to 1.571.
+second way: I assembled the arm in Blender and measured each joint and link's
+offset with the arm straight up (`QTEST = 0`). Doosan draws each mesh in its
+own link frame, so the transforms are just the joint offsets along the arm
+(0.1345, 0.411, 0.368, 0.121 m and the 6.2 mm elbow step) and how each frame
+is turned. They are written out in `barista/doosan_m0609.py`.
 
 One difference from `DHRobot3D`: several meshes can belong to one link (the
 upper arm has three), so the class keeps a list of (link, relation, mesh).
@@ -166,7 +163,7 @@ milk station's own code, not a copy made for the demo.
 
 | Stage | Shows | What to look for |
 | --- | --- | --- |
-| 1 Model | DH table, check against Doosan's URDF, reach, DH frames on the arm while each joint turns | 0.32 mm worst error over 500 poses (the URDF's rounded pi/2); 0.900 m reach |
+| 1 Model | DH table, check against the Blender frames, reach, DH frames on the arm while each joint turns | Every joint axis on its DH z axis and the flange at DH frame 6 (0.0000 mm); 0.900 m reach |
 | 2 IK | `ikine_LM` from 41 seeds for one pose: all 8 configurations, each scored by clearance | 4 collide (upper arm in the table); the planner takes the clearest |
 | 3 Trajectories and RMRC | The pour solved three ways | IK per sample is refused at sample 33 (a 1.30 rad flip of joints 4 and 6); `jtraj` from the pour's first pose to its last swings the spout 71 mm off the cup's axis and hits the cup; RMRC gets through. Plots manipulability, q5, damping and tracking error |
 | 4 Collision avoidance | A bottle left between the wash station and the dispenser | All 4 direct paths are blocked; a random clear via point (Lab 5's RRT step) gives a detour |
