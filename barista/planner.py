@@ -220,23 +220,35 @@ class Planner:
         robot, dt = self.robot, self.dt
         target = T.A
         for _ in range(self.RMRC_ITER):
+            # 1) Where the flange is now (FK), and how far it is from the target.
             cur = robot.fkine(q).A
-            e_p = target[:3, 3] - cur[:3, 3]
+            e_p = target[:3, 3] - cur[:3, 3]                  # position error (m)
             R_err = target[:3, :3] @ cur[:3, :3].T            # rotation still to go, world frame
+            # Rotation error as a 3-vector: the skew part of R_err is
+            # sin(angle) * [axis]x, so this picks out about angle * axis.
             e_r = 0.5 * np.array([R_err[2, 1] - R_err[1, 2], R_err[0, 2] - R_err[2, 0],
                                   R_err[1, 0] - R_err[0, 1]])
+            # 2) Flange velocity [v; w] that would close that error in one step.
             xdot = np.concatenate([e_p, e_r]) / dt
+            # 3) Jacobian in the world frame (6x6): xdot = J @ qdot.
             J = robot.jacob0(q)
+            # 4) Manipulability (Yoshikawa): goes to 0 at a singularity.
             w = np.sqrt(max(np.linalg.det(J @ J.T), 0.0))
+            # 5) Damping: zero when well away, rising smoothly to RMRC_LAMBDA as w -> 0.
             lam2 = (1.0 - (w / self.RMRC_W0) ** 2) * self.RMRC_LAMBDA ** 2 if w < self.RMRC_W0 else 0.0
-            W = self.RMRC_W
+            W = self.RMRC_W                                   # position weighted above orientation
+            # 6) Weighted damped least squares: qdot = (J'WJ + lambda^2 I)^-1 J'W xdot.
+            #    The lambda^2 I term keeps qdot bounded even when J loses rank.
             qdot = np.linalg.solve(J.T @ W @ J + lam2 * np.eye(6), J.T @ W @ xdot)
+            # 7) Integrate the joint rates over the step; loop again on what error is left.
             q = q + qdot * dt
+        # Checks before the step is accepted: joint limits, then tracking error.
         lo, hi = robot.qlim
         if np.any(q < lo) or np.any(q > hi):
             raise PlanningError(f"{label}: RMRC would pass a joint limit")
         cur = robot.fkine(q).A
         pos_err = np.linalg.norm(target[:3, 3] - cur[:3, 3])
+        # Angle of the remaining rotation: trace(R) = 1 + 2 cos(angle).
         rot_err = np.arccos(np.clip((np.trace(target[:3, :3] @ cur[:3, :3].T) - 1) / 2, -1, 1))
         if pos_err > self.RMRC_POS_TOL or rot_err > self.RMRC_ROT_TOL:
             raise PlanningError(f"{label}: RMRC tracking error {pos_err * 1000:.1f} mm, "
